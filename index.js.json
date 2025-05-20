@@ -1,0 +1,48 @@
+{
+	"pid": 49923,
+	"date": "2025-05-19T00:47:41.439Z",
+	"port": 5000,
+	"ip": "0.0.0.0",
+	"stats": [
+		{
+			"id": null,
+			"version": {
+				"node": "v22.14.0",
+				"total": "4",
+				"build": 4099,
+				"app": "1.0.0"
+			},
+			"pid": 49923,
+			"thread": "",
+			"mode": "debug",
+			"overload": 2,
+			"date": "2025-05-19T19:05:54.770Z",
+			"memory": 35.31,
+			"rm": 0,
+			"fm": 0,
+			"wm": 0,
+			"em": 0,
+			"mm": 0,
+			"om": 0,
+			"dm": 0,
+			"um": 0,
+			"pm": 0,
+			"sm": 0,
+			"cm": 0,
+			"dbrm": 0,
+			"dbwm": 0,
+			"usage": 0,
+			"requests": 0,
+			"pending": 0,
+			"external": 0,
+			"errors": 1,
+			"timeouts": 0,
+			"online": 0,
+			"uptime": 799,
+			"download": 0,
+			"upload": 0,
+			"lasterror": "2025-05-19T00:47:41.439Z Error [ERR_IPC_CHANNEL_CLOSED]: Channel closed\n    at target.send (node:internal/child_process:753:16)\n    at /Users/louisbertson/Desktop/zapwize/bailey/node_modules/total4/index.js:8421:30\n    at /Users/louisbertson/Desktop/zapwize/bailey/node_modules/total4/index.js:6339:17\n    at AP.async (/Users/louisbertson/Desktop/zapwize/bailey/node_modules/total4/utils.js:5439:4)\n    at Immediate.async_next (/Users/louisbertson/Desktop/zapwize/bailey/node_modules/total4/utils.js:5455:7)\n    at process.processImmediate (node:internal/timers:493:21)",
+			"status": []
+		}
+	]
+}

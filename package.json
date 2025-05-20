@@ -1,0 +1,20 @@
+{
+  "name": "bailey",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "baileys": "^6.7.17",
+    "mongodb": "^6.16.0",
+    "mongoose": "^8.15.0",
+    "qrcode": "^1.5.4",
+    "querybuilderpg": "^1.0.24",
+    "total4": "^0.0.99"
+  }
+}
