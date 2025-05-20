@@ -1,21 +1,18 @@
 const makeWASocket = require('baileys').default;
 const { useMultiFileAuthState, DisconnectReason } = require('baileys');
-
-
-
 async function create_client(id, t) {
     return new Promise(async function (resolve) {
-        const { state, saveCreds } = CONF.db_ctype == 'mongo' ? await MAIN.useMongoDBAuthState(id) : await useMultiFileAuthState(id);
-        let client = makeWASocket({
-            auth: state
-        });
-
+        t.mongo = mongoClient.db('zapwize')
+        const { state, saveCreds } = CONF.db_ctype == 'mongo' ? await MAIN.useMongoDBAuthState(t.mongo.collection(id)) : await useMultiFileAuthState(id);
         if (t) {
             t.authState = { state, saveCreds };
         }
-        resolve(client)
+        let client = makeWASocket({
+            auth: t.authState.state
+        });
+        resolve(client);
     });
-}
+};
 
 MAIN.Instance = function (phone, origin = 'zapwize') {
     var t = this;
@@ -159,8 +156,6 @@ IP.memory_refresh = function (body, callback) {
     callback && callback();
 };
 
-
-
 IP.init = async function () {
     var t = this;
     t.whatsapp = await create_client(t.phone, t);
@@ -187,6 +182,7 @@ IP.init = async function () {
     t.number = number;
 
     t.refresh_plans();
+    t.set_handlers();
 
     t.resetInstance = async function () {
         try {
@@ -293,9 +289,10 @@ IP.init = async function () {
 
 IP.set_handlers = function () {
     var t = this;
-
+    // t.whatsapp.ev.on('creds.update', t.authState.saveCreds);
     t.whatsapp.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
+        console.log('Connection update: ', update);
         t.state = connection;
         if (connection === 'open') {
             t.logs.push({ name: 'whatsapp_ready', content: true });
@@ -324,6 +321,7 @@ IP.set_handlers = function () {
 
         // handle qr code
         if (qr && connection === 'connecting') {
+
             t.qrcode = qr;
             // handlre qr retries
             t.qr_retry++;
@@ -345,11 +343,7 @@ IP.set_handlers = function () {
         }
     });
     // on credentials update save state
-    t.whatsapp.ev.on('creds.update', async (update) => {
-        t.logs.push({ name: 'whatsapp_creds_update', content: true });
-        t.PUB('creds_update', { env: t.Worker.data, content: true });
-        await t.whatsapp.authState.saveCreds();
-    });
+   
 
     // on presence update
     t.whatsapp.ev.on('presence.update', async (update) => {
@@ -402,10 +396,10 @@ IP.set_handlers = function () {
         console.log('Chats deleted: ' + t.chats.length);
         t.PUB('chats_delete', { env: t.Worker.data, content: true });
     });
-
-
     // on new message
     t.whatsapp.ev.on('messages.upsert', async (m) => {
+
+    
         if (m.type === 'prepend')
             t.messages.unshift(...m.messages)
 
@@ -592,6 +586,7 @@ IP.PUB = function (topic, obj, broker) {
     console.log('PUB: ' + topic, obj.content);
     t.send(obj);
 };
+
 IP.refresh_plans = async function () {
     let t = this;
     let order = t.order;
@@ -854,7 +849,7 @@ IP.onservice = function (tick) {
     t.refresh_limits();
 };
 
-ON('ready', async function () {
+ON('mongo:ready', async function () {
     let client = new MAIN.Instance('22656920671');
     client.init();
     await FUNC.sleep(3000);
