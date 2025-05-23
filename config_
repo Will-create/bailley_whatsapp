@@ -1,0 +1,14 @@
+salt  (generate) : 10
+antidel          : true
+ttl              : 3 days
+max_number       : 5
+fs               : totaljs filestorage server
+database         : postgresql://user:password@hostname:5432/db
+database2         : postgresql://user:password@hostname:5432/db2
+// The db_type can either be [local || mongo]
+db_ctype		   : mongo
+// mongodb uri example
+mongosh_uri 	 : mongodb://user:password@hostname:27017/db?authSource=admin 
+browserless      : wss://production-sfo.browserless.io/?token=<your_token>
+ip               : ip
+port             : 3043
