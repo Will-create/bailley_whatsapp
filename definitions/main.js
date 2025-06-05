@@ -1,18 +1,25 @@
 const makeWASocket = require('baileys').default;
-const { useMultiFileAuthState, DisconnectReason } = require('baileys');
+const QRCode = require('qrcode');
+
+const { useMultiFileAuthState, Browsers, DisconnectReason } = require('baileys');
 async function create_client(id, t) {
-    return new Promise(async function (resolve) {
-        t.mongo = mongoClient.db('zapwize')
-        const { state, saveCreds } = CONF.db_ctype == 'mongo' ? await MAIN.useMongoDBAuthState(t.mongo.collection(id)) : await useMultiFileAuthState(id);
-        if (t) {
-            t.authState = { state, saveCreds };
-        }
-        let client = makeWASocket({
-            auth: t.authState.state
-        });
-        resolve(client);
+    t.mongo = mongoClient.db('zapwize');
+    const { state, saveCreds } = CONF.db_ctype === 'mogo'
+        ? await MAIN.useMongoDBAuthState(t.mongo.collection(id))
+        : await useMultiFileAuthState('./databases/' + id);
+
+    t.authState = { state, saveCreds };
+
+    const client = makeWASocket({
+        auth: t.authState.state,
+        browser: Browsers.macOS('Desktop')
     });
-};
+
+    client.ev.removeAllListeners(); // Clean up listeners to avoid duplication or leaks
+
+    t.whatsapp = client;
+    return client;
+}
 
 MAIN.Instance = function (phone, origin = 'zapwize') {
     var t = this;
@@ -155,10 +162,14 @@ IP.memory_refresh = function (body, callback) {
     t.Worker = MEMORIZE(t.phone);
     callback && callback();
 };
-
+IP.setup_handlers = function () {
+    var t = this;
+    t.whatsapp.ev.removeAllListeners();
+    t.set_handlers();
+};
 IP.init = async function () {
     var t = this;
-    t.whatsapp = await create_client(t.phone, t);
+    await create_client(t.phone, t);
     var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
     if (!number) {
         number = {};
@@ -182,7 +193,7 @@ IP.init = async function () {
     t.number = number;
 
     t.refresh_plans();
-    t.set_handlers();
+    t.setup_handlers();
 
     t.resetInstance = async function () {
         try {
@@ -306,24 +317,21 @@ IP.set_handlers = function () {
             console.log('WhatsApp is ready: ' + t.phone);
 
         } else if (connection === 'close') {
-            if (lastDisconnect.error && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut) {
-                console.log('Connection closed. Reconnecting...');
-                await create_client(t.phone, t);
-                t.get_code();
-            } else {
-                console.log('Connection closed. Logged out.');
-                t.logs.push({ name: 'whatsapp_logout', content: true });
-                t.PUB('logout', { env: t.Worker.data, content: true });
+            if (connection === 'close') {
+                if (lastDisconnect.error && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut) {
+                    console.log('Connection closed. Reconnecting...');
+                    t.whatsapp = await create_client(t.phone, t); // remplace whatsapp
+                    await setup_handlers(t); // rebind les handlers ici
+                }
             }
-
-            console.log('WhatsApp is closed: ' + t.phone);
         }
 
         // handle qr code
-        if (qr && connection === 'connecting') {
+        if (qr) {
 
             t.qrcode = qr;
             // handlre qr retries
+            console.log(await QRCode.toString(qr, {type:'terminal'}))
             t.qr_retry++;
             if (t.qr_retry > t.qr_max_retry) {
                 t.logs.push({ name: 'whatsapp_qr_max_retry', content: true });
