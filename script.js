@@ -1,16 +1,14 @@
-import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState } from 'baileys';
 import { RedisStore } from 'baileys-redis-store'; // Import RedisStore for managing Redis-based session storage
 import pino from 'pino'; // Import Pino for logging
-import { createClient, RedisClientType } from 'redis'; // Import Redis client utilities
+import { createClient } from 'redis'; // Import Redis client utilities
 
 /**
  * Main function to set up the WhatsApp socket connection and Redis store.
  */
 async function main() {
     // Create a Redis client with connection options
-    const redisClient: RedisClientType = createClient({
-        url: "YOUR REDIS URL"
-    });
+    const redisClient = createClient();
 
     // Handle Redis connection errors
     redisClient.on('error', (err) => {
@@ -50,7 +48,7 @@ async function main() {
     sock.ev.on('creds.update', saveCreds);
 
     // Bind the store to the WhatsApp socket event emitter
-    await store.bind(sock.ev as any);
+    await store.bind(sock.ev);
 
     // Handle incoming messages
     sock.ev.on('messages.upsert', async ({ messages }) => {

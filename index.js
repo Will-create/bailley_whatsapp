@@ -1,1 +1,1 @@
-require('total4/debug')({ port: process.argv[2] || 5000 });
+require('total4/release')({ port: process.argv[2] || 5000 });

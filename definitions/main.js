@@ -1,8 +1,9 @@
-
 const makeWASocket = require('baileys').default;
-const QRCode = require('qrcode');
-
 const { useMultiFileAuthState, Browsers, DisconnectReason } = require('baileys');
+const { RedisStore } = require('baileys-redis-store');
+const { createClient } = require('redis');
+const pino = require('pino');
+
 const silentLogger = {
     info: console.log,
     warn: console.warn,
@@ -11,25 +12,35 @@ const silentLogger = {
     debug: console.log,
     child: () => silentLogger
 };
-async function create_client(id, t) {
-    t.mongo = mongoClient.db('zapwize');
-    const { state, saveCreds } = CONF.db_ctype === 'mongo'
-        ? await MAIN.useMongoDBAuthState(t.mongo.collection(id))
-        : await useMultiFileAuthState('./databases/' + id);
 
-    t.authState = { state, saveCreds };
-    console.child = NOOP;
-    const client = makeWASocket({
-        printQRInTerminal: true,
-        auth: t.authState.state,
-        browser: Browsers.macOS('Desktop'),
-        printQRInTerminal: false,
-        syncFullHistory: false,
-        logger: silentLogger,
+async function create_client(id, t) {
+    const redisClient = createClient();
+    redisClient.on('error', (err) => console.error('Redis Client Error:', err));
+    await redisClient.connect();
+
+    const store = new RedisStore({
+        redisConnection: redisClient,
+        prefix: id,
+        logger: pino({ level: 'debug' }),
+        maxCacheSize: 5000,
     });
 
-    client.ev.removeAllListeners(); // Clean up listeners to avoid duplication or leaks
+    const authDir = 'databases/' + id;
+   
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+    t.authState = { state, saveCreds };
+    t.store = store;
+    t.redisClient = redisClient;
+
+    const client = makeWASocket({
+        auth: t.authState.state,
+        browser: Browsers.macOS('Zapwize'),
+        getMessage: store.getMessage.bind(store)
+    });
+
+    await store.bind(client.ev);
+    client.ev.on('creds.update', saveCreds);
     t.whatsapp = client;
     return client;
 }
@@ -60,7 +71,7 @@ MAIN.Instance = function (phone, origin = 'zapwize') {
     t.days = {};
     t.qr_retry = 0;
     t.qr_max_retry = 10;
-    t.pairingCodeEnabled = t.phone && t.Data.mode == 'code' ? true : false;
+    t.pairingCodeEnabled = true;
     t.pairingCodeRequested = false;
     t.reconnectAttempts = 0;
     t.maxReconnectAttempts = 5;
@@ -90,7 +101,6 @@ IP.shutdown = function() {
         clearInterval(t.serviceInterval);
     }
     if (t.whatsapp) {
-        t.whatsapp.ev.removeAllListeners();
         t.whatsapp.end();
     }
 };
@@ -205,7 +215,6 @@ IP.memory_refresh = function (body, callback) {
 
 IP.setup_handlers = function () {
     var t = this;
-    t.whatsapp.ev.removeAllListeners();
     t.set_handlers();
 };
 
@@ -250,7 +259,6 @@ IP.init = async function () {
         t.restartInstance = async function () {
             try {
                 t.pairingCodeRequested = false;
-                t.whatsapp.ev.removeAllListeners();
                 t.whatsapp.end();
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 await create_client(t.phone, t);
@@ -375,9 +383,7 @@ IP.set_handlers = function () {
     
     t.whatsapp.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        console.log('Connection update: ', update);
         t.state = connection;
-        
         if (connection === 'open') {
             t.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
             t.logs.push({ name: 'whatsapp_ready', content: true });
