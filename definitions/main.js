@@ -1,18 +1,38 @@
+
 const makeWASocket = require('baileys').default;
 const QRCode = require('qrcode');
 
 const { useMultiFileAuthState, Browsers, DisconnectReason } = require('baileys');
+const silentLogger = {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    trace: () => {},
+    debug: () => {},
+    child: () => silentLogger
+};
 async function create_client(id, t) {
     t.mongo = mongoClient.db('zapwize');
-    const { state, saveCreds } = CONF.db_ctype === 'mogo'
+    const { state, saveCreds } = CONF.db_ctype === 'mongo'
         ? await MAIN.useMongoDBAuthState(t.mongo.collection(id))
         : await useMultiFileAuthState('./databases/' + id);
 
     t.authState = { state, saveCreds };
-
+    console.child = NOOP;
     const client = makeWASocket({
         auth: t.authState.state,
-        browser: Browsers.macOS('Desktop')
+        browser: Browsers.macOS('Desktop'),
+        printQRInTerminal: false,
+        generateHighQualityLinkPreview: true,
+        syncFullHistory: false,
+        markOnlineOnConnect: true,
+        connectTimeoutMs: 60_000,
+        defaultQueryTimeoutMs: 60_000,
+        keepAliveIntervalMs: 30_000,
+        retryRequestDelayMs: 1_000,
+        maxMsgRetryCount: 5,
+        msgRetryCounterCache: new Map(),
+        logger: silentLogger,
     });
 
     client.ev.removeAllListeners(); // Clean up listeners to avoid duplication or leaks
@@ -49,26 +69,38 @@ MAIN.Instance = function (phone, origin = 'zapwize') {
     t.qr_max_retry = 10;
     t.pairingCodeEnabled = t.phone && t.Data.mode == 'code' ? true : false;
     t.pairingCodeRequested = false;
+    t.reconnectAttempts = 0;
+    t.maxReconnectAttempts = 5;
+    t.reconnectDelay = 5000;
 
     // instead of onservice, we implement internal counter that is fired every 60 seconds
-
     t.tick = 0;
     t.tick2 = 0;
     t.tick_interval = 60;
 
-    setInterval(function () {
-        let t = this;
+    t.serviceInterval = setInterval(function () {
         t.tick2++;
         if (t.tick2 >= t.tick_interval) {
             t.tick2 = 0;
             t.tick++;
-            t.onservice(tick);
+            t.onservice(t.tick);
         }
-    }, 1000, t);
+    }, 1000);
 };
 
-
 var IP = MAIN.Instance.prototype;
+
+// Clean shutdown method
+IP.shutdown = function() {
+    var t = this;
+    if (t.serviceInterval) {
+        clearInterval(t.serviceInterval);
+    }
+    if (t.whatsapp) {
+        t.whatsapp.ev.removeAllListeners();
+        t.whatsapp.end();
+    }
+};
 
 // get code from whatsapp
 IP.get_code = function () {
@@ -84,49 +116,64 @@ IP.ws_send = function (obj) {
     var t = this;
     for (var key in t.ws_clients) {
         var client = t.ws_clients[key];
-        client.send(obj);
+        if (client && client.send) {
+            try {
+                client.send(obj);
+            } catch (err) {
+                console.error('Error sending to websocket client:', err);
+                delete t.ws_clients[key];
+            }
+        }
     }
 }
 
 IP.notify = function (obj) {
     var t = this;
-    RESTBuilder.POST(CONF.notify.format(obj.topic), { title: obj.title }).keepalive().callback(NOOP);
+    if (CONF.notify) {
+        RESTBuilder.POST(CONF.notify.format(obj.topic), { title: obj.title }).keepalive().callback(NOOP);
+    }
 };
 
 IP.save_revoked = async function (data) {
     var t = this;
-    var content = data.content;
-    var env = data.env;
-    var user = content.user;
-    var group = content.group;
-    var number = await t.db.read('tbl_number').where('phonenumber', env.phone).promise();
-    var chat = await t.db.read('tbl_chat').id(user.number).where('numberid', number.id).promise();
+    try {
+        var content = data.content;
+        var env = data.env;
+        var user = content.user;
+        var group = content.group;
+        var number = await t.db.read('db2/tbl_number').where('phonenumber', env.phone).promise();
+        var chat = await t.db.read('tbl_chat').id(user.number).where('numberid', number.id).promise();
 
-    if (!chat) {
-        chat = {};
-        chat.id = UID();
-        chat.numberid = number.id;
-        chat.value = user.phone;
-        chat.displayname = user.pushname;
-        chat.dtcreated = NOW;
-        await t.db.insert('tbl_chat', chat).promise();
-    };
-    var message = {};
-    message.id = UID();
-    message.chatid = chat.id;
-    message.type = content.type;
-    message.value = message.content = content.content;
-    message.caption = content.caption;
-    message.isviewonce = false;
-    message.dtcreated = NOW;
-    message.kind = content.type == 'edited' ? 'edited' : 'revoked';
-    await t.db.insert('tbl_message', message).promise();
-    await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
-    // send push notification
-    var obj = {};
-    obj.topic = 'revoked-' + t.phone;
-    obj.title = user.pushname;
-    t.notify(obj);
+        if (!chat) {
+            chat = {};
+            chat.id = UID();
+            chat.numberid = number.id;
+            chat.value = user.phone;
+            chat.displayname = user.pushname;
+            chat.dtcreated = NOW;
+            await t.db.insert('tbl_chat', chat).promise();
+        }
+        
+        var message = {};
+        message.id = UID();
+        message.chatid = chat.id;
+        message.type = content.type;
+        message.value = message.content = content.content;
+        message.caption = content.caption;
+        message.isviewonce = false;
+        message.dtcreated = NOW;
+        message.kind = content.type == 'edited' ? 'edited' : 'revoked';
+        await t.db.insert('tbl_message', message).promise();
+        await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+        
+        // send push notification
+        var obj = {};
+        obj.topic = 'revoked-' + t.phone;
+        obj.title = user.pushname;
+        t.notify(obj);
+    } catch (err) {
+        console.error('Error saving revoked message:', err);
+    }
 };
 
 IP.laststate = function () {
@@ -141,12 +188,13 @@ IP.send = function (obj) {
         obj.env = t.Data;
     obj.env.phone = t.phone;
     obj.type = 'event';
-    //console.log(this);
+    
     if (t.Data.webhook) {
-        RESTBuilder.POST(t.Data.webhook, obj).header('x-token', t.Data.token).header('token', t.Data.token).callback(NOOP);
+        RESTBuilder.POST(t.Data.webhook, obj)
+            .header('x-token', t.Data.token)
+            .header('token', t.Data.token)
+            .callback(NOOP);
     }
-
-
 };
 
 IP.memory_refresh = function (body, callback) {
@@ -154,437 +202,454 @@ IP.memory_refresh = function (body, callback) {
 
     if (body) {
         for (var key in body)
-            Worker.data[key] = body[key];
+            t.Worker.data[key] = body[key];
     }
 
     t.Worker.save();
-
     t.Worker = MEMORIZE(t.phone);
     callback && callback();
 };
+
 IP.setup_handlers = function () {
     var t = this;
     t.whatsapp.ev.removeAllListeners();
     t.set_handlers();
 };
+
 IP.init = async function () {
     var t = this;
-    await create_client(t.phone, t);
-    var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
-    if (!number) {
-        number = {};
-        number.id = UID();
-        number.phonenumber = t.phone;
-        number.url = 'ws://' + t.ip + ':' + t.port;
-        number.url = 'http://' + t.ip + ':' + t.port;
-        number.token = t.Data.token;
-        number.dtcreated = NOW;
-        await t.db.insert('db2/tbl_number', number).promise();
-    } else {
-        let upd = {};
-        upd.url = 'ws://' + t.ip + ':' + t.port;
-        upd.baseurl = 'http://' + t.ip + ':' + t.port;
-        upd.token = t.Data.token;
-        upd.dtupdated = NOW;
-        await t.db.update('db2/tbl_number', upd).where('phonenumber', t.phone).promise();
-        t.number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
-    }
-
-    t.number = number;
-
-    t.refresh_plans();
-    t.setup_handlers();
-
-    t.resetInstance = async function () {
-        try {
-            t.pairingCodeRequested = false;
-            t.PUB('instance_restarted', { content: true });
-        } catch (err) {
-            console.error('Error restarting instance:', err);
+    try {
+        await create_client(t.phone, t);
+        var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
+        
+        if (!number) {
+            number = {};
+            number.id = UID();
+            number.phonenumber = t.phone;
+            number.url = 'ws://' + t.ip + ':' + t.port;
+            number.baseurl = 'http://' + t.ip + ':' + t.port;
+            number.token = t.Data.token;
+            number.dtcreated = NOW;
+            await t.db.insert('db2/tbl_number', number).promise();
+        } else {
+            let upd = {};
+            upd.url = 'ws://' + t.ip + ':' + t.port;
+            upd.baseurl = 'http://' + t.ip + ':' + t.port;
+            upd.token = t.Data.token;
+            upd.dtupdated = NOW;
+            await t.db.update('db2/tbl_number', upd).where('phonenumber', t.phone).promise();
+            number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
         }
-    };
-    t.restartInstance = async function () {
-        try {
-            t.pairingCodeRequested = false;
-            t.PUB('instance_reset', { content: true });
-        } catch (err) {
-            console.error('Error resetting instance:', err);
-        }
-    };
-    ROUTE('+POST /api/config/' + t.phone, function (phone) {
-        var self = this;
-        var body = self.body;
-        t.memory_refresh(body, function () {
+
+        t.number = number;
+        t.refresh_plans();
+        t.setup_handlers();
+
+        t.resetInstance = async function () {
+            try {
+                t.pairingCodeRequested = false;
+                t.PUB('instance_restarted', { content: true });
+            } catch (err) {
+                console.error('Error restarting instance:', err);
+            }
+        };
+        
+        t.restartInstance = async function () {
+            try {
+                t.pairingCodeRequested = false;
+                t.whatsapp.ev.removeAllListeners();
+                t.whatsapp.end();
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                await create_client(t.phone, t);
+                t.setup_handlers();
+                t.PUB('instance_reset', { content: true });
+            } catch (err) {
+                console.error('Error resetting instance:', err);
+            }
+        };
+
+        // Setup routes
+        ROUTE('+POST /api/config/' + t.phone, function (phone) {
+            var self = this;
+            var body = self.body;
+            t.memory_refresh(body, function () {
+                self.success();
+            });
+        });
+
+        ROUTE('+GET /api/config/' + t.phone, function (phone) {
+            var self = this;
+            self.json(t.Data);
+        });
+
+        ROUTE('+POST /api/rpc/' + t.phone, function (phone) {
+            var self = this;
+            var payload = self.body;
+            self.ws = false;
+            t.message(payload, self);
+        });
+
+        ROUTE('+POST ' + (t.Data.messageapi || '/api/send/') + t.phone, function () {
+            var self = this;
+            console.log(self.body);
+            if (t.state == 'open') {
+                t.sendMessage(self.body);
+                t.usage(self);
+            }
             self.success();
         });
-    });
-    ROUTE('+GET /api/config/' + t.phone, function (phone) {
-        var self = this;
-        self.json(t.Data);
-    });
-    ROUTE('+POST /api/rpc/' + t.phone, function (phone) {
-        var self = this;
-        var payload = self.body;
-        self.ws = false;
-        t.message(payload, self);
-    });
-    ROUTE('+POST ' + t.Data.messageapi + t.phone, function () {
-        var self = this;
-        console.log(self.body);
-        t.state == 'CONNECTED' && t.sendMessage(self.body);
-        t.state == 'CONNECTED' && t.usage(self);
-        self.success();
-    });
-    ROUTE('+POST ' + t.Data.mediaapi + t.phone, function () {
-        var self = this;
-        console.log(self.body);
-        t.state == 'CONNECTED' && t.send_file(self.body);
-        t.state == 'CONNECTED' && t.usage(self);
-        self.success();
-    });
-    // Websocket server
-    ROUTE('+SOCKET /api/ws/' + t.phone, function (phone) {
-        var self = this;
-        var socket = self;
-        self.ws = true;
-        t.ws = socket;
-        self.autodestroy();
-        socket.on('open', function (client) {
-            client.phone = t.phone;
-            t.ws_clients[client.id] = client;
 
-            var timeout = setTimeout(function () {
-                if (t.state == 'CONNECTED') {
-                    client.send({ type: 'ready' });
-                } else {
-                    for (var log of t.logs) {
-                        if (log.name == 'whatsapp_ready')
-                            client.send({ type: 'ready' });
+        ROUTE('+POST ' + (t.Data.mediaapi || '/api/media/') + t.phone, function () {
+            var self = this;
+            console.log(self.body);
+            if (t.state == 'open') {
+                t.send_file(self.body);
+                t.usage(self);
+            }
+            self.success();
+        });
+
+        // Websocket server
+        ROUTE('+SOCKET /api/ws/' + t.phone, function (phone) {
+            var self = this;
+            var socket = self;
+            self.ws = true;
+            t.ws = socket;
+            self.autodestroy();
+            
+            socket.on('open', function (client) {
+                client.phone = t.phone;
+                t.ws_clients[client.id] = client;
+
+                var timeout = setTimeout(function () {
+                    if (t.state == 'open') {
+                        client.send({ type: 'ready' });
+                    } else {
+                        for (var log of t.logs) {
+                            if (log.name == 'whatsapp_ready')
+                                client.send({ type: 'ready' });
+                        }
                     }
+                    clearTimeout(timeout);
+                }, 2000);
+            });
+            
+            socket.on('message', function (client, msg) {
+                if (msg && msg.topic) {
+                    self.client = client;
+                    t.message(msg, self);
                 }
-                clearTimeout(timeout);
-            }, 2000);
-        });
-        socket.on('message', function (client, msg) {
-            if (msg && msg.topic) {
-                self.client = client;
-                t.message(msg, self);
-            }
 
-            // check by msg.type
-            if (msg && msg.type) {
-                switch (msg.type) {
-                    case 'text':
-                        t.sendMessage(msg);
-                        // replay with success
-                        break;
-                    case 'file':
-                        t.send_file(msg);
-                        break;
+                if (msg && msg.type) {
+                    switch (msg.type) {
+                        case 'text':
+                            if (t.state == 'open') {
+                                t.sendMessage(msg);
+                            }
+                            break;
+                        case 'file':
+                            if (t.state == 'open') {
+                                t.send_file(msg);
+                            }
+                            break;
+                    }
+                    client.send({ success: true });
                 }
-                client.send({ success: true });
-            }
-            // reply with success any way
-            //client.send({ success: true });
+            });
+            
+            socket.on('disconnect', function (client) {
+                console.log('Client disconnected:', client.id);
+                delete t.ws_clients[client.id];
+            });
         });
-        socket.on('disconnect', function () {
-            console.log('Client disconnected');
-        });
-    });
-    setTimeout(function () {
-        console.log('Initializing whatsapp: ' + t.id);
-        t.logs.push({ name: 'instance_initializing', content: 'ID:' + t.id });
-    }, 500);
+
+        setTimeout(function () {
+            console.log('Initializing whatsapp: ' + t.id);
+            t.logs.push({ name: 'instance_initializing', content: 'ID:' + t.id });
+        }, 500);
+        
+    } catch (err) {
+        console.error('Error initializing instance:', err);
+        t.logs.push({ name: 'instance_error', content: err.message });
+    }
 };
-
 
 IP.set_handlers = function () {
     var t = this;
-    // t.whatsapp.ev.on('creds.update', t.authState.saveCreds);
+    
+    // Save credentials on update
+    t.whatsapp.ev.on('creds.update', t.authState.saveCreds);
+    
     t.whatsapp.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         console.log('Connection update: ', update);
         t.state = connection;
+        
         if (connection === 'open') {
+            t.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
             t.logs.push({ name: 'whatsapp_ready', content: true });
             t.PUB('ready', { env: t.Worker.data, content: true });
             t.save_session();
             t.get_code();
             t.refresh_plans();
-            // set instance as online
             t.PUB('instance_online', { env: t.Worker.data, content: true });
             t.online = true;
             console.log('WhatsApp is ready: ' + t.phone);
 
         } else if (connection === 'close') {
-            if (connection === 'close') {
-                if (lastDisconnect.error && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut) {
-                    console.log('Connection closed. Reconnecting...');
-                    t.whatsapp = await create_client(t.phone, t); // remplace whatsapp
-                    await setup_handlers(t); // rebind les handlers ici
-                }
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed, shouldReconnect:', shouldReconnect);
+            
+            if (shouldReconnect && t.reconnectAttempts < t.maxReconnectAttempts) {
+                t.reconnectAttempts++;
+                console.log(`Reconnecting... attempt ${t.reconnectAttempts}/${t.maxReconnectAttempts}`);
+                
+                setTimeout(async () => {
+                    try {
+                        t.whatsapp = await create_client(t.phone, t);
+                        t.setup_handlers();
+                    } catch (err) {
+                        console.error('Reconnection failed:', err);
+                    }
+                }, t.reconnectDelay * t.reconnectAttempts);
+            } else if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
+                console.log('Device logged out, stopping reconnection attempts');
+                t.logs.push({ name: 'whatsapp_logged_out', content: true });
+                t.PUB('logged_out', { env: t.Worker.data, content: true });
             }
         }
 
         // handle qr code
         if (qr) {
-
             t.qrcode = qr;
-            // handlre qr retries
-            console.log(await QRCode.toString(qr, {type:'terminal'}))
+            console.log(await QRCode.toString(qr, {type:'terminal'}));
             t.qr_retry++;
+            
             if (t.qr_retry > t.qr_max_retry) {
                 t.logs.push({ name: 'whatsapp_qr_max_retry', content: true });
                 t.PUB('qr_max_retry', { env: t.Worker.data, content: true });
                 return;
-            };
-
-            if (!t.pairingCodeEnabled) {
-                // request pairing code
-                t.code = await t.whatsapp.requestPairingCode(t.phone);
-                t.pairingCodeRequested = true;
-                console.log(t.phone + ': Pairing code requested: ' + t.code);
             }
+
+            if (t.pairingCodeEnabled && !t.pairingCodeRequested) {
+                try {
+                    t.code = await t.whatsapp.requestPairingCode(t.phone);
+                    t.pairingCodeRequested = true;
+                    console.log(t.phone + ': Pairing code requested: ' + t.code);
+                } catch (err) {
+                    console.error('Error requesting pairing code:', err);
+                }
+            }
+            
             t.get_code();
             t.logs.push({ name: 'whatsapp_qr', content: true });
             t.PUB('qr', { env: t.Worker.data, content: qr });
         }
     });
-    // on credentials update save state
-   
 
     // on presence update
     t.whatsapp.ev.on('presence.update', async (update) => {
-        const { id, presences } = update;
-        const presence = presences[id];
-        if (presence) {
-            t.logs.push({ name: 'whatsapp_presence_update', content: presence });
-            t.PUB('presence_update', { env: t.Worker.data, content: presence });
+        try {
+            const { id, presences } = update;
+            const presence = presences[id];
+            if (presence) {
+                t.logs.push({ name: 'whatsapp_presence_update', content: presence });
+                t.PUB('presence_update', { env: t.Worker.data, content: presence });
+            }
+        } catch (err) {
+            console.error('Error handling presence update:', err);
         }
     });
 
-    // on receive all chats, then put in this.chats and in this.Worker.data.chats && save
+    // on receive all chats
     t.whatsapp.ev.on('chats.set', async (update) => {
-        const chats = update.chats;
-
-
-        let received_chats = [];
-        // loop and format each chat as {chat, messages: [] }
-        for (var i = 0; i < chats.length; i++) {
-            var chat = chats[i];
-            chat.messages = [];
-            if (chat.isGroup) {
-                var group = await t.whatsapp.groupMetadata(chat.id);
-                chat.group = group;
+        try {
+            const chats = update.chats;
+            let received_chats = [];
+            
+            for (var i = 0; i < chats.length; i++) {
+                var chat = chats[i];
+                chat.messages = [];
+                if (chat.isGroup) {
+                    try {
+                        var group = await t.whatsapp.groupMetadata(chat.id);
+                        chat.group = group;
+                    } catch (err) {
+                        console.error('Error getting group metadata:', err);
+                    }
+                }
+                received_chats.push(chat);
             }
 
-            // push to received_chats
-            received_chats.push(chat);
+            t.chats = received_chats;
+            t.Worker.data.chats = received_chats;
+            t.Worker.save();
+            t.logs.push({ name: 'whatsapp_chats_loading', content: true });
+            console.log('Chats loaded: ' + t.chats.length);
+            t.PUB('chats_loading', { env: t.Worker.data, content: true });
+        } catch (err) {
+            console.error('Error handling chats.set:', err);
         }
-
-        t.chats = received_chats;
-        t.Worker.data.chats = received_chats;
-        t.Worker.save();
-        t.logs.push({ name: 'whatsapp_chats_loading', content: true });
-        console.log('Chats loaded: ' + t.chats.length);
-        t.PUB('chats_loading', { env: t.Worker.data, content: true });
     });
 
     // on chat delete
     t.whatsapp.ev.on('chats.delete', async (update) => {
-        const chats = update.chats;
-        for (var i = 0; i < chats.length; i++) {
-            var chat = chats[i];
-            // remove from this.chats
-            t.chats = t.chats.filter(c => c.id != chat.id);
+        try {
+            const chats = update.chats;
+            for (var i = 0; i < chats.length; i++) {
+                var chat = chats[i];
+                t.chats = t.chats.filter(c => c.id != chat.id);
+            }
+            t.Worker.data.chats = t.chats;
+            t.Worker.save();
+            t.logs.push({ name: 'whatsapp_chats_delete', content: true });
+            console.log('Chats deleted: ' + chats.length);
+            t.PUB('chats_delete', { env: t.Worker.data, content: true });
+        } catch (err) {
+            console.error('Error handling chats.delete:', err);
         }
-        t.Worker.data.chats = t.chats;
-        t.Worker.save();
-        t.logs.push({ name: 'whatsapp_chats_delete', content: true });
-        console.log('Chats deleted: ' + t.chats.length);
-        t.PUB('chats_delete', { env: t.Worker.data, content: true });
     });
+
     // on new message
     t.whatsapp.ev.on('messages.upsert', async (m) => {
-
-    
-        if (m.type === 'prepend')
-            t.messages.unshift(...m.messages)
-
-        if (m.type !== 'notify')
-            return;
-
-        // if send read receipt
-
-        if (t.Worker.data.markMessagesRead) {
-            const unreadMessages = m.messages.map((msg) => {
-                return {
-                    remoteJid: msg.key.remoteJid,
-                    id: msg.key.id,
-                    participant: msg.key?.participant,
-                }
-            })
-            await t.whatsapp.readMessages(unreadMessages)
-        }
-
-        t.messages.unshift(...m.messages);
-
-        m.messages.wait(async function (msg, next) {
-            if (!msg.message)
+        try {
+            if (m.type === 'prepend') {
+                t.messages.unshift(...m.messages);
                 return;
-
-            const messageType = Object.keys(msg.message)[0]
-
-            const webhookData = {
-                key: t.phone,
-                ...msg,
             }
 
-            if (messageType === 'conversation') {
-                webhookData['text'] = m
-                // pub 
-                t.PUB('message', { env: t.Worker.data, content: webhookData });
+            if (m.type !== 'notify') {
+                return;
             }
-            switch (messageType) {
-                case 'imageMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.imageMessage,
-                        'image'
-                    )
-                    break
-                case 'videoMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.videoMessage,
-                        'video'
-                    )
-                    break
-                case 'audioMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.audioMessage,
-                        'audio'
-                    )
-                    break
-                default:
-                    webhookData['content'] = ''
-                    break
+
+            // if send read receipt
+            if (t.Worker.data.markMessagesRead) {
+                const unreadMessages = m.messages.map((msg) => {
+                    return {
+                        remoteJid: msg.key.remoteJid,
+                        id: msg.key.id,
+                        participant: msg.key?.participant,
+                    }
+                });
+                await t.whatsapp.readMessages(unreadMessages);
             }
-            next();
-        }, async function () {
-            // save message to db not the first one only but all
-            // loop and save each message
-            var number = await t.db.read('tbl_number').where('phonenumber', t.phone).promise();
 
-            for (var i = 0; i < m.messages.length; i++) {
-                var msg = m.messages[i];
-                var msg = m.messages[0];
-                var chat = await t.db.read('tbl_chat').id(msg.key.remoteJid).where('numberid', number.id).promise();
+            t.messages.unshift(...m.messages);
 
-                if (!chat) {
-                    chat = {};
-                    chat.id = UID();
-                    chat.numberid = number.id;
-                    chat.value = msg.key.remoteJid;
-                    chat.displayname = msg.pushName;
-                    chat.dtcreated = NOW;
-                    await t.db.insert('tbl_chat', chat).promise();
+            // Process messages
+            for (let msg of m.messages) {
+                if (!msg.message) continue;
+
+                const messageType = Object.keys(msg.message)[0];
+                const webhookData = {
+                    key: t.phone,
+                    ...msg,
                 };
-                var message = {};
-                message.id = msg.key.id;
-                message.chatid = chat.id;
-                message.type = msg.type;
-                message.value = msg.message[msg.type].text || msg.message[msg.type].caption || '';
-                message.caption = msg.message[msg.type].caption || '';
-                message.isviewonce = false;
-                message.dtcreated = NOW;
-                message.kind = msg.type == 'edited' ? 'edited' : 'received';
-                message.isgroup = msg.key.remoteJid.indexOf('@g.us') != -1 ? true : false;
-                await t.db.insert('tbl_message', message).promise();
-                await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+
+                if (messageType === 'conversation') {
+                    webhookData['text'] = msg.message.conversation;
+                    t.PUB('message', { env: t.Worker.data, content: webhookData });
+                }
+
+                switch (messageType) {
+                    case 'imageMessage':
+                        if (FUNC && FUNC.downloadMessage) {
+                            webhookData['content'] = await FUNC.downloadMessage(
+                                msg.message.imageMessage,
+                                'image'
+                            );
+                        }
+                        break;
+                    case 'videoMessage':
+                        if (FUNC && FUNC.downloadMessage) {
+                            webhookData['content'] = await FUNC.downloadMessage(
+                                msg.message.videoMessage,
+                                'video'
+                            );
+                        }
+                        break;
+                    case 'audioMessage':
+                        if (FUNC && FUNC.downloadMessage) {
+                            webhookData['content'] = await FUNC.downloadMessage(
+                                msg.message.audioMessage,
+                                'audio'
+                            );
+                        }
+                        break;
+                    default:
+                        webhookData['content'] = '';
+                        break;
+                }
+
+                // Save to database
+                await t.saveMessageToDatabase(msg);
             }
-        });
-    })
+        } catch (err) {
+            console.error('Error handling messages.upsert:', err);
+        }
+    });
 
     // on message delete
     t.whatsapp.ev.on('messages.delete', async (m) => {
-        m.messages.wait(async function (msg, next) {
-            if (!msg.key)
-                return;
+        try {
+            for (let msg of m.messages) {
+                if (!msg.key) continue;
 
-            const messageType = Object.keys(msg.message)[0]
-
-            const webhookData = {
-                key: t.phone,
-                ...msg,
-            }
-
-            if (messageType === 'conversation') {
-                webhookData['text'] = m
-                // pub 
-                t.PUB('message', { env: t.Worker.data, content: webhookData });
-            }
-            switch (messageType) {
-                case 'imageMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.imageMessage,
-                        'image'
-                    )
-                    break
-                case 'videoMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.videoMessage,
-                        'video'
-                    )
-                    break
-                case 'audioMessage':
-                    webhookData['content'] = await FUNC.downloadMessage(
-                        msg.message.audioMessage,
-                        'audio'
-                    )
-                    break
-                default:
-                    webhookData['content'] = ''
-                    break
-            }
-            next();
-        }, async function () {
-            // save message to db not the first one only but all
-            // loop and save each message
-            var number = await t.db.read('tbl_number').where('phonenumber', t.phone).promise();
-
-            for (var i = 0; i < m.messages.length; i++) {
-                var msg = m.messages[i];
-                var chat = await t.db.read('tbl_chat').id(msg.key.remoteJid).where('numberid', number.id).promise();
-
-                if (!chat) {
-                    chat = {};
-                    chat.id = UID();
-                    chat.numberid = number.id;
-                    chat.value = msg.key.remoteJid;
-                    chat.displayname = msg.pushName;
-                    chat.dtcreated = NOW;
-                    await t.db.insert('tbl_chat', chat).promise();
+                const messageType = Object.keys(msg.message || {})[0];
+                const webhookData = {
+                    key: t.phone,
+                    ...msg,
                 };
-                var message = {};
-                message.id = msg.key.id;
-                message.chatid = chat.id;
-                message.type = msg.type;
-                message.value = msg.message[msg.type].text || msg.message[msg.type].caption || '';
-                message.caption = msg.message[msg.type].caption || '';
-                message.isviewonce = false;
-                message.dtcreated = NOW;
-                message.kind = msg.type == 'edited' ? 'edited' : 'received';
-                message.isgroup = msg.key.remoteJid.indexOf('@g.us') != -1 ? true : false;
 
-                await t.db.insert('tbl_message', message).promise();
-                await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
-                // save revoked message
+                // Save deleted message to database
+                await t.saveMessageToDatabase(msg, true);
+                
                 if (msg.type == 'revoked') {
                     await t.save_revoked(msg);
                 }
-            }       
-        });
+            }
+        } catch (err) {
+            console.error('Error handling messages.delete:', err);
+        }
     });
+};
 
+IP.saveMessageToDatabase = async function(msg, isDeleted = false) {
+    var t = this;
+    try {
+        var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
+        if (!number) return;
+
+        var chat = await t.db.read('tbl_chat').id(msg.key.remoteJid).where('numberid', number.id).promise();
+
+        if (!chat) {
+            chat = {};
+            chat.id = UID();
+            chat.numberid = number.id;
+            chat.value = msg.key.remoteJid;
+            chat.displayname = msg.pushName || '';
+            chat.dtcreated = NOW;
+            await t.db.insert('tbl_chat', chat).promise();
+        }
+
+        var message = {};
+        message.id = msg.key.id;
+        message.chatid = chat.id;
+        
+        const messageType = Object.keys(msg.message || {})[0] || 'unknown';
+        message.type = messageType;
+        message.value = msg.message?.[messageType]?.text || msg.message?.[messageType]?.caption || '';
+        message.caption = msg.message?.[messageType]?.caption || '';
+        message.isviewonce = false;
+        message.dtcreated = NOW;
+        message.kind = isDeleted ? 'deleted' : 'received';
+        message.isgroup = msg.key.remoteJid.indexOf('@g.us') !== -1;
+        
+        await t.db.insert('tbl_message', message).promise();
+        await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+    } catch (err) {
+        console.error('Error saving message to database:', err);
+    }
 };
 
 IP.PUB = function (topic, obj, broker) {
@@ -597,87 +662,102 @@ IP.PUB = function (topic, obj, broker) {
 
 IP.refresh_plans = async function () {
     let t = this;
-    let order = t.order;
-    if (!t.plan) {
-        t.plans = t.number.plans.split(',');
-        let plans = await t.db.find('tbl_plan').in('id', t.plans).promise();
-        t.plan = plans.findItem('id', 'elite') || plans.findItem('id', 'pro') || plans.findItem('id', 'standard') || plans.findItem('id', 'starter') || plans.findItem('id', 'free');
+    try {
+        let order = t.order;
+        if (!t.plan && t.number && t.number.plans) {
+            t.plans = t.number.plans.split(',');
+            let plans = await t.db.find('tbl_plan').in('id', t.plans).promise();
+            t.plan = plans.findItem('id', 'elite') || plans.findItem('id', 'pro') || plans.findItem('id', 'standard') || plans.findItem('id', 'starter') || plans.findItem('id', 'free');
+        }
+
+        if (!t.order && t.plan) {
+            t.order = await t.db.read('tbl_order').where('ispaid', true).where('expired=FALSE').where('planid', t.plan.id).where('numberid', t.number.id).promise();
+        }
+
+        if (t.plan && t.plan.id == 'free') {
+            order = {};
+            order.id = UID();
+            order.planid = 'free';
+            order.numberid = t.number.id;
+            order.userid = t.number.userid;
+            order.expire = order.dtend = NOW.add('7 days').format('dd-MM-yyyy');
+            order.dtcreated = NOW;
+            order.ispaid = true;
+            order.date = order.dtstart = NOW.format('dd-MM-yyyy');
+            await t.db.insert('tbl_order', order).promise();
+            t.order = order;
+        }
+
+        t.refresh_days();
+        t.refresh_limits();
+    } catch (err) {
+        console.error('Error refreshing plans:', err);
     }
-
-
-    if (!t.order)
-        t.order = await t.db.read('tbl_order').where('ispaid', true).where('expired=FALSE').where('planid', t.plan.id).where('numberid', t.number.id).promise();
-
-    if (t.plan.id == 'free') {
-        order = {};
-        order.id = UID();
-        order.planid = 'free';
-        order.numberid = t.number.id;
-        order.userid = t.number.userid;
-        order.expire = order.dtend = NOW.add('7 days').format('dd-MM-yyyy');
-        order.dtcreated = NOW;
-        order.ispaid = true;
-        order.date = order.dtstart = NOW.format('dd-MM-yyyy');
-        await t.db.insert('tbl_order', order).promise();
-        t.order = order;
-    }
-
-    t.refresh_days();
-    t.refresh_limits();
 };
+
 IP.refresh_days = function (key) {
     let t = this;
     return new Promise(async function (resolve) {
-        let duration = t.plan.id == 'free' ? 7 : 30;
-        t.monthly_count = 0;
-        t.daily_count = 0;
+        try {
+            let duration = t.plan && t.plan.id == 'free' ? 7 : 30;
+            t.monthly_count = 0;
+            t.daily_count = 0;
 
-        if (t.order) {
-            for (var i = 0; i < duration; i++) {
-                let ts = t.order.ts || t.order.dtcreated;
-                let id = ts.add(i + ' days').format('dd-MM-yyyy');
-                let reqs = await t.db.find('tbl_request').where('numberid', t.number.id).where('date', id).promise();
-                t.monthly_count += reqs.length;
-                if (id == NOW.format('dd-MM-yyyy'))
-                    reqs.dailly_count = reqs.length;
-                t.days[id] = reqs || [];
+            if (t.order) {
+                for (var i = 0; i < duration; i++) {
+                    let ts = t.order.ts || t.order.dtcreated;
+                    let id = ts.add(i + ' days').format('dd-MM-yyyy');
+                    let reqs = await t.db.find('tbl_request').where('numberid', t.number.id).where('date', id).promise();
+                    t.monthly_count += reqs.length;
+                    if (id == NOW.format('dd-MM-yyyy'))
+                        t.daily_count = reqs.length;
+                    t.days[id] = reqs || [];
+                }
             }
+            resolve(key ? t.days[key] : t.days);
+        } catch (err) {
+            console.error('Error refreshing days:', err);
+            resolve({});
         }
-        resolve(key ? t.days[key] : t.days);
     });
 };
+
 IP.usage = async function ($, next) {
     var t = this;
-    var number = t.number;
-    var data = {};
-    data.id = UID();
-    data.numberid = number.id;
-    data.userid = number.userid;
-    data.apikey = $.query.apikey;
-    data.date = NOW.format('dd-MM-yyyy');
-    data.ip = $.ip;
-    data.ua = $.ua;
-    data.status = 'pending';
-    data.dtcreated = NOW;
-    t.db.insert('tbl_request', data).callback(NOOP);
-
-
-    if (t.is_maxlimit) {
-
+    try {
+        var number = t.number;
+        var data = {};
+        data.id = UID();
+        data.numberid = number.id;
+        data.userid = number.userid;
+        data.apikey = $.query.apikey;
+        data.date = NOW.format('dd-MM-yyyy');
+        data.ip = $.ip;
+        data.ua = $.ua;
+        data.status = 'pending';
+        data.dtcreated = NOW;
+        t.db.insert('tbl_request', data).callback(NOOP);
+    } catch (err) {
+        console.error('Error tracking usage:', err);
     }
 };
 
 IP.refresh_limits = async function () {
     let t = this;
-    if (t.monthly_count >= t.plan.maxlimit)
-        t.is_maxlimit = true;
+    try {
+        if (t.plan && t.monthly_count >= t.plan.maxlimit) {
+            t.is_maxlimit = true;
+        }
 
-    var key = NOW.format('dd-MM-yyyy');
-    let reqs = t.days[key];
+        var key = NOW.format('dd-MM-yyyy');
+        let reqs = t.days[key];
 
-
-    if (t.plan && reqs && reqs.length >= t.plan.limit)
-        t.is_limit = true;
+        if (t.plan && reqs && reqs.length >= t.plan.limit) {
+            t.is_limit = true;
+        }
+    } catch (err) {
+        console.error('Error refreshing limits:', err);
+    }
 };
 
 IP.save_session = async function () {
