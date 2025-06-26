@@ -10,11 +10,15 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
     "baileys": "^6.7.17",
+    "baileys-redis-store": "^1.0.0",
     "mongodb": "^6.16.0",
     "mongoose": "^8.15.0",
+    "pino": "^9.7.0",
     "qrcode": "^1.5.4",
     "querybuilderpg": "^1.0.24",
+    "redis": "^5.5.6",
     "total4": "^0.0.99"
   }
 }

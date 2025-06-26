@@ -4,11 +4,11 @@ const QRCode = require('qrcode');
 
 const { useMultiFileAuthState, Browsers, DisconnectReason } = require('baileys');
 const silentLogger = {
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    trace: () => {},
-    debug: () => {},
+    info: console.log,
+    warn: console.warn,
+    error: console.error,
+    trace: console.log,
+    debug: console.log,
     child: () => silentLogger
 };
 async function create_client(id, t) {
@@ -20,18 +20,11 @@ async function create_client(id, t) {
     t.authState = { state, saveCreds };
     console.child = NOOP;
     const client = makeWASocket({
+        printQRInTerminal: true,
         auth: t.authState.state,
         browser: Browsers.macOS('Desktop'),
         printQRInTerminal: false,
-        generateHighQualityLinkPreview: true,
         syncFullHistory: false,
-        markOnlineOnConnect: true,
-        connectTimeoutMs: 60_000,
-        defaultQueryTimeoutMs: 60_000,
-        keepAliveIntervalMs: 30_000,
-        retryRequestDelayMs: 1_000,
-        maxMsgRetryCount: 5,
-        msgRetryCounterCache: new Map(),
         logger: silentLogger,
     });
 
@@ -422,7 +415,8 @@ IP.set_handlers = function () {
         // handle qr code
         if (qr) {
             t.qrcode = qr;
-            console.log(await QRCode.toString(qr, {type:'terminal'}));
+            console.log('QR Code received:', qr);
+            //console.log(await QRCode.toString(qr, {type:'terminal'}));
             t.qr_retry++;
             
             if (t.qr_retry > t.qr_max_retry) {

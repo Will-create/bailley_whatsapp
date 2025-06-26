@@ -1,6 +1,6 @@
 {
-	"pid": 20913,
-	"date": "2025-06-26T13:16:44.784Z",
+	"pid": 4055,
+	"date": "2025-06-26T17:15:58.339Z",
 	"port": 5000,
 	"ip": "0.0.0.0",
 	"stats": [
@@ -12,12 +12,12 @@
 				"build": 4099,
 				"app": "1.0.0"
 			},
-			"pid": 20913,
+			"pid": 4055,
 			"thread": "",
 			"mode": "debug",
 			"overload": 0,
-			"date": "2025-06-26T13:19:44.850Z",
-			"memory": 41.51,
+			"date": "2025-06-26T17:16:58.413Z",
+			"memory": 40.73,
 			"rm": 0,
 			"fm": 0,
 			"wm": 0,
@@ -29,19 +29,18 @@
 			"pm": 0,
 			"sm": 0,
 			"cm": 0,
-			"dbrm": 7,
-			"dbwm": 0,
+			"dbrm": 11,
+			"dbwm": 2,
 			"usage": 0,
 			"requests": 0,
 			"pending": 0,
 			"external": 0,
-			"errors": 1,
+			"errors": 0,
 			"timeouts": 0,
 			"online": 0,
-			"uptime": 4,
+			"uptime": 2,
 			"download": 0,
 			"upload": 0,
-			"lasterror": "2025-06-26T13:16:50.298Z DB - error: duplicate key value violates unique constraint \"tbl_order_userid_key\" - INSERT INTO tbl_order (\"id\",\"planid\",\"numberid\",\"userid\",\"dtend\",\"expire\",\"dtcreated\",\"ispaid\",\"dtst",
 			"status": []
 		}
 	]
