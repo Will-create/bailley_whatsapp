@@ -4,6 +4,9 @@ const { RedisStore } = require('baileys-redis-store');
 const { createClient } = require('redis');
 const pino = require('pino');
 
+// require terminal qr
+const QRCode = require('qrcode');
+
 const silentLogger = {
     info: console.log,
     warn: console.warn,
@@ -14,7 +17,7 @@ const silentLogger = {
 };
 
 async function create_client(id, t) {
-    const redisClient = createClient();
+    const redisClient = createClient({ url: CONF.redisUrl});
     redisClient.on('error', (err) => console.error('Redis Client Error:', err));
     await redisClient.connect();
 
@@ -35,7 +38,7 @@ async function create_client(id, t) {
 
     const client = makeWASocket({
         auth: t.authState.state,
-        browser: Browsers.macOS('Zapwize'),
+        browser: Browsers.macOS('Google Chrome'),
         getMessage: store.getMessage.bind(store)
     });
 
@@ -45,9 +48,18 @@ async function create_client(id, t) {
     return client;
 }
 
-MAIN.Instance = function (phone, origin = 'zapwize') {
+MAIN.Instance = function (phone, baseurl, origin = 'zapwize') {
     var t = this;
     t.db = DB();
+    let filename = PATH.databases('memorize_' + phone + '.json');
+
+
+    // check if memorize file exists, if not create it
+    if (!Total.Fs.existsSync(filename)) { 
+        Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, baseurl), null, 2));
+    }
+
+
     var w = t.memorize = MEMORIZE(phone);
     var data = w.data || {};
     data.id = UID();
@@ -145,7 +157,7 @@ IP.save_revoked = async function (data) {
         var user = content.user;
         var group = content.group;
         var number = await t.db.read('db2/tbl_number').where('phonenumber', env.phone).promise();
-        var chat = await t.db.read('tbl_chat').id(user.number).where('numberid', number.id).promise();
+        var chat = await t.db.read('db2/tbl_chat').id(user.number).where('numberid', number.id).promise();
 
         if (!chat) {
             chat = {};
@@ -154,7 +166,7 @@ IP.save_revoked = async function (data) {
             chat.value = user.phone;
             chat.displayname = user.pushname;
             chat.dtcreated = NOW;
-            await t.db.insert('tbl_chat', chat).promise();
+            await t.db.insert('db2/tbl_chat', chat).promise();
         }
         
         var message = {};
@@ -166,8 +178,8 @@ IP.save_revoked = async function (data) {
         message.isviewonce = false;
         message.dtcreated = NOW;
         message.kind = content.type == 'edited' ? 'edited' : 'revoked';
-        await t.db.insert('tbl_message', message).promise();
-        await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+        await t.db.insert('db2/tbl_message', message).promise();
+        await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
         
         // send push notification
         var obj = {};
@@ -424,7 +436,15 @@ IP.set_handlers = function () {
             console.log('QR Code received:', qr);
             //console.log(await QRCode.toString(qr, {type:'terminal'}));
             t.qr_retry++;
-            
+            // print QR code in terminal
+            QRCode.toString(qr, { type: 'terminal', small: true }, (err, qrString) => {
+                if (err) {
+                    console.error('Error generating QR code:', err);
+                } else {
+                    console.log('QR Code:\n' + qrString);
+                }
+            });
+
             if (t.qr_retry > t.qr_max_retry) {
                 t.logs.push({ name: 'whatsapp_qr_max_retry', content: true });
                 t.PUB('qr_max_retry', { env: t.Worker.data, content: true });
@@ -432,13 +452,16 @@ IP.set_handlers = function () {
             }
 
             if (t.pairingCodeEnabled && !t.pairingCodeRequested) {
-                try {
+               // request pairing code after a delay
+                setTimeout(async () => {
+                     try {
                     t.code = await t.whatsapp.requestPairingCode(t.phone);
                     t.pairingCodeRequested = true;
                     console.log(t.phone + ': Pairing code requested: ' + t.code);
                 } catch (err) {
                     console.error('Error requesting pairing code:', err);
                 }
+                }, 3000);
             }
             
             t.get_code();
@@ -620,7 +643,7 @@ IP.saveMessageToDatabase = async function(msg, isDeleted = false) {
         var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
         if (!number) return;
 
-        var chat = await t.db.read('tbl_chat').id(msg.key.remoteJid).where('numberid', number.id).promise();
+        var chat = await t.db.read('db2/tbl_chat').id(msg.key.remoteJid).where('numberid', number.id).promise();
 
         if (!chat) {
             chat = {};
@@ -629,7 +652,7 @@ IP.saveMessageToDatabase = async function(msg, isDeleted = false) {
             chat.value = msg.key.remoteJid;
             chat.displayname = msg.pushName || '';
             chat.dtcreated = NOW;
-            await t.db.insert('tbl_chat', chat).promise();
+            await t.db.insert('db2/tbl_chat', chat).promise();
         }
 
         var message = {};
@@ -645,8 +668,8 @@ IP.saveMessageToDatabase = async function(msg, isDeleted = false) {
         message.kind = isDeleted ? 'deleted' : 'received';
         message.isgroup = msg.key.remoteJid.indexOf('@g.us') !== -1;
         
-        await t.db.insert('tbl_message', message).promise();
-        await t.db.update('tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+        await t.db.insert('db2/tbl_message', message).promise();
+        await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
     } catch (err) {
         console.error('Error saving message to database:', err);
     }

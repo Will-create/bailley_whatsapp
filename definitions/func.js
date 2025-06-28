@@ -68,5 +68,49 @@ FUNC.processButton = function (buttons) {
 };
 
 
+// {
+// 	"data": {
+// 		"name": "Muald",
+// 		"mode": "code",
+// 		"baseurl": "https://whatsapp.muald.com",
+// 		"phone": "22650777706",
+// 		"messageapi": "/api/message/",
+// 		"mediaapi": "/api/media/",
+// 		"rpc": "/api/rpc/",
+// 		"webhook": "https://api.muald.com/proxy/admin/webhook/",
+// 		"id": "1jns8001sn51d",
+// 		"status": "active",
+// 		"sendseen": false,
+// 		"sendtyping": false,
+// 		"sendrecording": false
+// 	},
+// 	"id": "1jns8001sn51d"
+// }
 
 
+// FUNC fn to return formatted data from the above object with only phone
+FUNC.getFormattedData = function (phone, baseurl) {
+
+    let data =  {
+        name: 'Muald',
+        mode: 'code',
+        token: CONF.token || GUID(35),
+        baseurl: baseurl || 'https://whatsapp.muald.com',
+        phone: phone,
+        messageapi: '/api/message/',
+        mediaapi: '/api/media/',
+        rpc: '/api/rpc/',
+        webhook: 'https://api.muald.com/proxy/admin/webhook/',
+        id: UID(),
+        status: 'active',
+        sendseen: false,
+        sendtyping: false,
+        sendrecording: false
+    }
+
+
+    return {
+        data: data,
+        id: data.id
+    }
+};
