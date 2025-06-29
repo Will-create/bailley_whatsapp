@@ -20,28 +20,22 @@ async function create_client(id, t) {
     const redisClient = createClient({ url: CONF.redisUrl});
     redisClient.on('error', (err) => console.error('Redis Client Error:', err));
     await redisClient.connect();
-
     const store = new RedisStore({
         redisConnection: redisClient,
         prefix: id,
         logger: pino({ level: 'debug' }),
         maxCacheSize: 5000,
     });
-
     const authDir = 'databases/' + id;
-   
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
-
     t.authState = { state, saveCreds };
     t.store = store;
     t.redisClient = redisClient;
-
     const client = makeWASocket({
         auth: t.authState.state,
         browser: Browsers.macOS('Google Chrome'),
         getMessage: store.getMessage.bind(store)
     });
-
     await store.bind(client.ev);
     client.ev.on('creds.update', saveCreds);
     t.whatsapp = client;

@@ -7,12 +7,11 @@ const logger = require('pino')()
 MAIN.logger = logger;
 MAIN.connectToCluster = async function (uri) {
     let mongoClient
-
     try {
         mongoClient = new MongoClient(uri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
-        })
+        });
         logger.info('STATE: Connecting to MongoDB')
         await mongoClient.connect()
         logger.info('STATE: Successfully connected to MongoDB')
