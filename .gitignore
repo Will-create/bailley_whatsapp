@@ -2,3 +2,5 @@ node_modules
 config
 package-lock.json
 databases
+baileys_auth_info
+baileys_auth_info2
