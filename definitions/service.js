@@ -1,9 +1,8 @@
-const { makeWASocket, useMultiFileAuthState, Browsers, DisconnectReason } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, Browsers, getContentType, DisconnectReason } = require('@whiskeysockets/baileys');
 const { RedisStore } = require('baileys-redis-store');
 const { createClient } = require('redis');
 const pino = require('pino');
 const EventEmitter = require('events');
-const cluster = require('cluster');
 const os = require('os');
 
 
@@ -240,7 +239,7 @@ class WhatsAppInstance extends EventEmitter {
         let filename = PATH.databases('memorize_' + phone + '.json');
         // check if memorize file exists, if not create it
         if (!Total.Fs.existsSync(filename)) { 
-            Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, baseurl), null, 2));
+            Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, CONF.baseurl), null, 2));
         }
 
         var w = t.memorize = MEMORIZE(phone);
@@ -422,7 +421,7 @@ class WhatsAppInstance extends EventEmitter {
         }
     }
 
-    refresh_days() {
+    refresh_days(key) {
         let t = this;
         return new Promise(async function (resolve) {
             try {
@@ -450,7 +449,6 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async usage($, t) {
-        let t = this;   
         try {
             var number = t.number;
             var data = {};
@@ -500,26 +498,64 @@ class WhatsAppInstance extends EventEmitter {
         };
         if (t.origin == 'zapwize') {
             t.ws_send(obj);
+
         }
+
+        t.emit('ask', obj);
     }
 
     async sendMessage(data) {
-        if (data.chatid.indexOf('@') == -1) {
-            var isphone = data.chatid.isPhone();
-            if (isphone)
-                data.chatid = data.chatid + '@c.us';
-            else
-                data.chatid = data.chatid + '@g.us';
+        if (!data.chatid.includes('@')) {
+            data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
         }
 
-        // send message via socket
-        this.socket.sendMessage(data.chatid, data.content, { quoted: data.quoted });
+        const options = {};
+        if (data.quoted) {
+            options.quoted = data.quoted;
+        }
+
+        await this.socket.sendMessage(data.chatid, { text: data.content }, options);
     }
 
     async send_file(data) {
-        
+        if (!data.chatid.includes('@')) {
+            data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
+        }
 
-    }
+        const mediaData = data.mediaData;
+        const mimetype = mediaData.mimetype || 'application/octet-stream';
+        const filename = `file_${Date.now()}` + (data.ext || '');
+        const caption = mediaData.caption || '';
+
+        let buffer;
+
+        if (mediaData.type === 'url') {
+            // Download using global DOWNLOAD helper
+            await new Promise((resolve, reject) => {
+                DOWNLOAD(mediaData.url, PATH.temp(filename), function(err, response) {
+                    if (err) return reject(err);
+                    buffer = fs.readFileSync(PATH.temp(filename));
+                    fs.unlinkSync(PATH.temp(filename)); // clean up
+                    resolve();
+                });
+            });
+        } else if (mediaData.type === 'base64') {
+            const base64 = mediaData.content.replace(/^data:.*?base64,/, '');
+            buffer = Buffer.from(base64, 'base64');
+        } else {
+            throw new Error('Invalid mediaData type. Use "url" or "base64".');
+        }
+
+        const msg = {
+            document: buffer,
+            fileName: filename,
+            mimetype: mimetype,
+            caption: caption
+        };
+
+        await this.socket.sendMessage(data.chatid, msg);
+    };
+
 
     async message(msg, ctrl) {
         var t = this;
@@ -564,7 +600,7 @@ class WhatsAppInstance extends EventEmitter {
         ctrl && ctrl.ws && ctrl.client.send(output);
     }
 
-    save_file() {
+    save_file(data) {
         var obj = {};
         obj.name = GUID(35) + data.ext;
         obj.file = data.content;
@@ -641,101 +677,6 @@ class WhatsAppInstance extends EventEmitter {
                     console.error('Error resetting instance:', err);
                 }
             };
-
-            // Setup routes
-            ROUTE('+POST /api/config/' + t.phone, function (phone) {
-                var self = this;
-                var body = self.body;
-                t.memory_refresh(body, function () {
-                    self.success();
-                });
-            });
-
-            ROUTE('+GET /api/config/' + t.phone, function (phone) {
-                var self = this;
-                self.json(t.Data);
-            });
-
-            ROUTE('+POST /api/rpc/' + t.phone, function (phone) {
-                var self = this;
-                var payload = self.body;
-                self.ws = false;
-                t.message(payload, self);
-            }); 
-
-            ROUTE('+POST ' + (t.Data.messageapi || '/api/send/') + t.phone, function () {
-                var self = this;
-                console.log(self.body);
-                if (t.state == 'open') {
-                    t.sendMessage(self.body);
-                    t.usage(self);
-                }
-                self.success();
-            });
-
-            ROUTE('+POST ' + (t.Data.mediaapi || '/api/media/') + t.phone, function () {
-                var self = this;
-                console.log(self.body);
-                if (t.state == 'open') {
-                    t.send_file(self.body);
-                    t.usage(self);
-                }
-                self.success();
-            });
-
-            // Websocket server
-            ROUTE('+SOCKET /api/ws/' + t.phone, function (phone) {
-                var self = this;
-                var socket = self;
-                self.ws = true;
-                t.ws = socket;
-                self.autodestroy();
-                
-                socket.on('open', function (client) {
-                    client.phone = t.phone;
-                    t.ws_clients[client.id] = client;
-
-                    var timeout = setTimeout(function () {
-                        if (t.state == 'open') {
-                            client.send({ type: 'ready' });
-                        } else {
-                            for (var log of t.logs) {
-                                if (log.name == 'whatsapp_ready')
-                                    client.send({ type: 'ready' });
-                            }
-                        }
-                        clearTimeout(timeout);
-                    }, 2000);
-                });
-                
-                socket.on('message', function (client, msg) {
-                    if (msg && msg.topic) {
-                        self.client = client;
-                        t.message(msg, self);
-                    }
-
-                    if (msg && msg.type) {
-                        switch (msg.type) {
-                            case 'text':
-                                if (t.state == 'open') {
-                                    t.sendMessage(msg);
-                                }
-                                break;
-                            case 'file':
-                                if (t.state == 'open') {
-                                    t.send_file(msg);
-                                }
-                                break;
-                        }
-                        client.send({ success: true });
-                    }
-                });
-                
-                socket.on('disconnect', function (client) {
-                    console.log('Client disconnected:', client.id);
-                    delete t.ws_clients[client.id];
-                });
-            });
 
             setTimeout(function () {
                 console.log('Initializing whatsapp: ' + t.id);
@@ -903,6 +844,8 @@ class WhatsAppInstance extends EventEmitter {
             hasMeData: !!state.creds?.me,
             isRegistered: !!state.creds?.registered
         }, 'Auth state initialized');
+
+        this.init();
     }
 
     async createSocket() {
@@ -1329,6 +1272,17 @@ class WhatsAppInstance extends EventEmitter {
             }
         }
 
+        console.log('📩 Received message:', getContentType(message.message));
+
+        FUNC.send_seen(message, this.socket);
+        FUNC.handle_status(message, this, this.socket);
+        FUNC.handle_voice(message, this, this.socket);
+        FUNC.handle_textonly(message, this, this.socket);
+        FUNC.handle_media(message, this, this.socket);
+        FUNC.handle_image(message, this, this.socket);
+
+
+
         // Emit message event
         this.emit('message', message);
     }
@@ -1679,6 +1633,109 @@ class WhatsAppSessionManager extends EventEmitter {
         this.instances.clear();
 
         this.logger.info('All instances shutdown completed');
+    }
+
+    setupRoutes() {
+        let inst = this;
+            // Setup routes
+            ROUTE('+POST /api/config/{phone}/', function (phone) {
+                let t = inst.instances.get(phone);
+                var self = this;
+                var body = self.body;
+                t.memory_refresh(body, function () {
+                    self.success();
+                });
+            });
+
+            ROUTE('+GET /api/config/{phone}/', function (phone) {
+                let t = inst.instances.get(phone);
+                var self = this;
+                self.json(t.Data);
+            });
+
+            ROUTE('+POST /api/rpc/{phone}/', function (phone) {
+                let t = inst.instances.get(phone);
+                var self = this;
+                var payload = self.body;
+                self.ws = false;
+                t.message(payload, self);
+            }); 
+
+            ROUTE('+POST /api/send/{phone}/', function (phone) {
+                let t = inst.instances.get(phone);
+                var self = this;
+                if (t.state == 'open') {
+                    t.sendMessage(self.body);
+                    t.usage(self);
+                }
+                self.success();
+            });
+
+            ROUTE('+POST /api/media/{phone}/', function () {
+                let t = inst.instances.get(this.phone);
+                var self = this;
+                if (t.state == 'open') {
+                    t.send_file(self.body);
+                    t.usage(self);
+                }
+                self.success();
+            });
+
+            // Websocket server
+            ROUTE('+SOCKET /api/ws/{phone}/', function (phone) {
+                let t = inst.instances.get(phone);
+                var self = this;
+                var socket = self;
+                self.ws = true;
+                t.ws = socket;
+                self.autodestroy();
+                
+                socket.on('open', function (client) {
+                    client.phone = t.phone;
+                    t.ws_clients[client.id] = client;
+
+                    var timeout = setTimeout(function () {
+                        if (t.state == 'open') {
+                            client.send({ type: 'ready' });
+                        } else {
+                            for (var log of t.logs) {
+                                if (log.name == 'whatsapp_ready')
+                                    client.send({ type: 'ready' });
+                            }
+                        }
+                        clearTimeout(timeout);
+                    }, 2000);
+                });
+                
+                socket.on('message', function (client, msg) {
+                    if (msg && msg.topic) {
+                        self.client = client;
+                        t.message(msg, self);
+                    }
+
+                    if (msg && msg.type) {
+                        switch (msg.type) {
+                            case 'text':
+                                if (t.state == 'open') {
+                                    t.sendMessage(msg);
+                                }
+                                break;
+                            case 'file':
+                                if (t.state == 'open') {
+                                    t.send_file(msg);
+                                }
+                                break;
+                        }
+                        client.send({ success: true });
+                    }
+                });
+                
+                socket.on('disconnect', function (client) {
+                    console.log('Client disconnected:', client.id);
+                    delete t.ws_clients[client.id];
+                });
+            });
+
     }
 }
 
