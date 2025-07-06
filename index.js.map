@@ -2,39 +2,31 @@
 	"routes": [
 		{
 			"method": "POST",
-			"url": "/api/config/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
+			"url": "/api/instances/{phone}/pairing-code/refresh/",
+			"owner": "definition_service",
+			"params": "phone:string"
 		},
 		{
 			"method": "POST",
-			"url": "/api/rpc/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
+			"url": "/api/instances/",
+			"owner": "definition_service"
 		},
 		{
-			"method": "POST",
-			"url": "/api/send/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
-		},
-		{
-			"method": "POST",
-			"url": "/api/media/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
+			"method": "DELETE",
+			"url": "/api/instances/{phone}/",
+			"owner": "definition_service",
+			"params": "phone:string"
 		},
 		{
 			"method": "GET",
-			"url": "/api/config/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
+			"url": "/api/instances/status/",
+			"owner": "definition_service"
 		},
 		{
-			"method": "SOCKET",
-			"url": "/api/ws/22656920671/",
-			"auth": 1,
-			"owner": "definition_sessions"
+			"method": "GET",
+			"url": "/api/instances/{phone}/status/",
+			"owner": "definition_service",
+			"params": "phone:string"
 		}
 	]
 }

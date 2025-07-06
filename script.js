@@ -1,76 +1,79 @@
-import { makeWASocket, useMultiFileAuthState } from 'baileys';
-import { RedisStore } from 'baileys-redis-store'; // Import RedisStore for managing Redis-based session storage
-import pino from 'pino'; // Import Pino for logging
-import { createClient } from 'redis'; // Import Redis client utilities
+const { makeWASocket, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
+const readline = require('readline');
 
-/**
- * Main function to set up the WhatsApp socket connection and Redis store.
- */
-async function main() {
-    // Create a Redis client with connection options
-    const redisClient = createClient();
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const ask = (text) => new Promise((resolve) => rl.question(text, resolve));
 
-    // Handle Redis connection errors
-    redisClient.on('error', (err) => {
-        console.error('Redis Client Error:', err);
-        // Optionally attempt to reconnect
-        // setTimeout(() => redisClient.connect(), 5000); // Retry connection after 5 seconds
-    });
+// Prevent reconnect loop
+let hasReconnected = false;
 
-    // Connect to the Redis server
-    try {
-        await redisClient.connect();
-        console.log('Connected to Redis successfully!');
-    } catch (error) {
-        console.error('Error connecting to Redis:', error);
-        return; // Exit if connection fails
-    }
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info2');
 
-    // Create a RedisStore instance for managing Baileys store data
-    const store = new RedisStore({
-        redisConnection: redisClient,
-        prefix: 'store', // Optional prefix for Redis keys
-        logger: pino({ level: 'debug' }), // Optional Pino logger instance
-        maxCacheSize: 5000, // Maximum number of messages to cache locally (defaults to 1000)
-    });
-
-    // Load authentication state from multi-file storage
-    const { state, saveCreds } = await useMultiFileAuthState('./Test');
-
-    // Create a WhatsApp socket connection with the specified configuration
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
-        getMessage: store.getMessage.bind(store), // Bind the context for getMessage method
+        browser: ['Mac OS', 'Chrome', '119.0.0.0'],
+        printQRInTerminal: false,
+        markOnlineOnConnect: true,
     });
 
-    // Listen for credentials updates and save them
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', async () => await saveCreds());
 
-    // Bind the store to the WhatsApp socket event emitter
-    await store.bind(sock.ev);
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect } = update;
 
-    // Handle incoming messages
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0];
+        if (connection === 'open') {
+            console.log('\n✅ Connection successfully established.\n');
+            rl.close();
+        }
 
-        // Example of loading a specific message by ID
-        const loadMessage = store.loadMessage("12343434@jid", "04FC413D6BE3C1XXXX");
-        
-        // Example of loading the latest messages (up to 40) for a specific chat
-        const loadMessages = store.loadMessages("12343434@jid", 40);
+        if (connection === 'close') {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log('\n⚠️ Connection closed:', lastDisconnect?.error?.message || 'Unknown error');
+            if (code === 515) {
+                console.error('💣 WhatsApp blocked the session (code 515). Review fingerprint and pairing method.');
+            }
+
+            if (!hasReconnected) {
+                hasReconnected = true;
+                console.log('🕒 Reconnecting in 5 seconds...');
+                setTimeout(() => connectToWhatsApp(), 5000);
+            } else {
+                console.error('❌ Reconnect failed. Manual intervention required.');
+                process.exit(1);
+            }
+        }
     });
 
-    // Gracefully disconnect from Redis on process exit
-    process.on('SIGINT', async () => {
-        console.log('Disconnecting from Redis...');
-        await redisClient.quit();
-        console.log('Disconnected from Redis.');
-        process.exit(0); // Exit cleanly
-    });
+    if (!sock.authState.creds.registered) {
+        const rawNumber = await ask('📱 Enter your phone number in international format:\n');
+        const sanitized = rawNumber.replace(/\D/g, '').replace(/^0+/, '');
+
+        if (sanitized.length < 10 || sanitized.length > 15) {
+            console.error('❌ Invalid phone number.');
+            rl.close();
+            return;
+        }
+
+        console.log('⏳ Waiting 10 seconds before requesting pairing code...');
+        await new Promise(res => setTimeout(res, 10000));
+
+        try {
+            const pairingCode = await sock.requestPairingCode(sanitized);
+            const formatted = pairingCode.length === 8 ? pairingCode.slice(0, 4) + '-' + pairingCode.slice(4) : pairingCode;
+            console.log(`\n🔢 Enter this code in WhatsApp: ${formatted}`);
+        } catch (error) {
+            console.error('❌ Failed to request pairing code:', error?.message || error);
+        }
+    } else {
+        console.log('✅ Already registered with WhatsApp.');
+        rl.close();
+    }
 }
 
-// Execute the main function and handle any errors
-main().catch((error) => {
-    console.error('Main function error:', error);
+process.on('SIGINT', () => {
+    console.log('\n🛑 Shutdown requested.');
+    process.exit(0);
 });
+
+connectToWhatsApp();

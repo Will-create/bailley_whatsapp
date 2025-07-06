@@ -1,7 +1,7 @@
 {
-	"pid": 16205,
-	"date": "2025-06-28T09:05:58.252Z",
-	"port": 5000,
+	"pid": 15576,
+	"date": "2025-07-06T07:03:20.730Z",
+	"port": 8000,
 	"ip": "0.0.0.0",
 	"stats": [
 		{
@@ -12,12 +12,12 @@
 				"build": 4099,
 				"app": "1.0.0"
 			},
-			"pid": 16205,
+			"pid": 15576,
 			"thread": "",
-			"mode": "release",
+			"mode": "debug",
 			"overload": 0,
-			"date": "2025-06-28T09:05:58.252Z",
-			"memory": 57.07,
+			"date": "2025-07-06T07:04:20.876Z",
+			"memory": 44.41,
 			"rm": 0,
 			"fm": 0,
 			"wm": 0,
@@ -38,7 +38,7 @@
 			"errors": 0,
 			"timeouts": 0,
 			"online": 0,
-			"uptime": 1,
+			"uptime": 2,
 			"download": 0,
 			"upload": 0,
 			"status": []
