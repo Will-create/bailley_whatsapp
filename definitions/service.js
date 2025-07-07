@@ -504,7 +504,7 @@ class WhatsAppInstance extends EventEmitter {
         t.emit('ask', obj);
     }
 
-    async sendMessage(data) {
+    async send_message(data) {
         if (!data.chatid.includes('@')) {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
         }
@@ -522,28 +522,33 @@ class WhatsAppInstance extends EventEmitter {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
         }
 
-        const mediaData = data.mediaData;
-        const mimetype = mediaData.mimetype || 'application/octet-stream';
-        const filename = `file_${Date.now()}` + (data.ext || '');
-        const caption = mediaData.caption || '';
-
+        
+        let filename;
+        
+        const caption = data.caption || '';
+        let mimetype = 'application/octet-stream'; 
         let buffer;
 
-        if (mediaData.type === 'url') {
+        if (data.type === 'url') {
             // Download using global DOWNLOAD helper
+            let fs = F.Fs;
+            data.ext = U.getExtension(data.url);
+            filename = `file_${Date.now()}.` + (data.ext || '');
+            
+            mimetype = U.getContentType(filename);
             await new Promise((resolve, reject) => {
-                DOWNLOAD(mediaData.url, PATH.temp(filename), function(err, response) {
+                DOWNLOAD(data.url, PATH.temp(filename), function(err, response) {
                     if (err) return reject(err);
                     buffer = fs.readFileSync(PATH.temp(filename));
                     fs.unlinkSync(PATH.temp(filename)); // clean up
                     resolve();
                 });
             });
-        } else if (mediaData.type === 'base64') {
-            const base64 = mediaData.content.replace(/^data:.*?base64,/, '');
+        } else if (data.type === 'base64') {
+            const base64 = data.content.replace(/^data:.*?base64,/, '');
             buffer = Buffer.from(base64, 'base64');
         } else {
-            throw new Error('Invalid mediaData type. Use "url" or "base64".');
+            throw new Error('Invalid data type. Use "url" or "base64".');
         }
 
         const msg = {

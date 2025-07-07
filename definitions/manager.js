@@ -41,13 +41,14 @@ ON('ready', async function () {
 
     instance.on('ready', async () => {
         // Send text message
-        await instance.sendMessage({
+        await instance.send_message({
             chatid: receiver,
             content: '🔥 This is a test message from FUNC_BAILEYS.sendMessage().'
         });
 
         // Send image
         await instance.send_file({
+                chatid: receiver,
                 type: 'url',
                 url: 'https://fs.zapwize.com/files/22656920671/1n23c001ri51d-pp.jpg',
                 caption: '🖼️ Test image from Baileys wrapper'
@@ -56,6 +57,7 @@ ON('ready', async function () {
 
         // Send PDF
         await instance.send_file({
+                chatid: receiver,
                 type: 'url',
                 url: 'https://fs.zapwize.com/files/22656920671/1n235001ri51d-of.pdf',
                 caption: '📄 Test PDF from Baileys wrapper'

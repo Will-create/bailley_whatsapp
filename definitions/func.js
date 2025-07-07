@@ -126,10 +126,9 @@ FUNC.handle_textonly = async function (message, self, conn) {
     const isgroup = chatid.includes("@g.us");
     const user = {};
     const group = {};
-    const sender = isgroup ? message.key.participant : message.key.remoteJid;
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
     const pushName = message.pushName || "Unknown";
-
-    console.log('Message of reintry', message.message)
+    
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
@@ -161,7 +160,7 @@ FUNC.handle_textonly = async function (message, self, conn) {
 
 FUNC.send_seen = async function (message, conn) {
     const chatid = message.key.remoteJid;
-    await conn.sendReadReceipt(chatid, message.key.participant || message.key.remoteJid, [message.key.id]);
+    // await conn.sendReadReceipt(chatid, message.key.participant || message.key.remoteJid, [message.key.id]);
 };
 
 FUNC.handle_voice = async function (message, self, conn) {
@@ -217,6 +216,8 @@ FUNC.handle_media = async function (message, self, conn) {
 
     const mtype = getContentType(message.message);
     if (mtype === 'imageMessage' || mtype === 'audioMessage') return; // Filter only video/docs/others
+
+    if (mtype == "conversation" || mtype == "extendedTextMessage") return;
 
     const media = await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage });
     const mimetype = message.message[mtype]?.mimetype;
