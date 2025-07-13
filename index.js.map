@@ -1,1 +1,46 @@
-{}
+{
+	"routes": [
+		{
+			"method": "POST",
+			"url": "/api/config/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "POST",
+			"url": "/api/rpc/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "POST",
+			"url": "/api/send/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "POST",
+			"url": "/api/media/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "GET",
+			"url": "/api/config/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "SOCKET",
+			"url": "/api/ws/{phone}/",
+			"auth": 1,
+			"owner": "definition_service",
+			"params": "phone:string"
+		}
+	]
+}

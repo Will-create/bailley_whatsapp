@@ -1,4 +1,4 @@
-const { makeWASocket, useMultiFileAuthState, Browsers, getContentType, DisconnectReason } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, Browsers, getContentType, DisconnectReason } = require('baileys');
 const { RedisStore } = require('baileys-redis-store');
 const { createClient } = require('redis');
 const pino = require('pino');
@@ -11,12 +11,12 @@ const silentLogger = {
     warn: NOOP,
     error: NOOP,
     trace: NOOP ,
-    debug: NOOP,
+    debug: console.log,
     child: () => silentLogger
 };
 
 // Production-grade logger with levels and structured logging
-const createLogger = (instanceId) => {
+const createLogger = (phone) => {
     return silentLogger;
     return pino({
         level: process.env.LOG_LEVEL || 'debug',
@@ -24,7 +24,7 @@ const createLogger = (instanceId) => {
             level: (label) => ({ level: label.toUpperCase() }),
         },
         base: {
-            instanceId,
+            phone,
             pid: process.pid,
             hostname: os.hostname()
         },
@@ -192,7 +192,7 @@ class WhatsAppInstance extends EventEmitter {
         super();
         this.phone = phone;
         this.config = config;
-        this.logger = createLogger(this.id);
+        this.logger = createLogger(phone);
         this.state = 'INITIALIZING';
         this.socket = null;
         this.store = null;
@@ -202,7 +202,7 @@ class WhatsAppInstance extends EventEmitter {
 
         // Pairing code configuration
         this.usePairingCode = config.usePairingCode || false;
-        this.pairingCodeTimeout = config.pairingCodeTimeout || 120000; // 2 minutes
+        this.pairingCodeTimeout = config.pairingCodeTimeout || 300000; // 5 minutes
         this.currentPairingCode = null;
         this.pairingCodeTimer = null;
         this.pairingAttempts = 0;
@@ -564,8 +564,7 @@ class WhatsAppInstance extends EventEmitter {
 
     async message(msg, ctrl) {
         var t = this;
-        var output = { reqid: UID() };
-        var reqid = msg.reqid || UID();
+        var output = { reqid: msg.reqid || UID(), state: t.state };
         var topic = msg.topic;
         switch (topic) {
             case 'state':
@@ -961,7 +960,7 @@ class WhatsAppInstance extends EventEmitter {
                 } catch (error) {
                     this.logger.error({ error }, 'Failed to request pairing code');
                 }
-            }, 500);
+            }, 2000);
         } else if (qr && !this.usePairingCode) {
             this.logger.info('QR code received');
             this.emit('qr', qr);
@@ -1445,6 +1444,9 @@ class WhatsAppSessionManager extends EventEmitter {
         // Health monitoring
         this.healthCheckInterval = config.healthCheckInterval || 30000;
         this.startHealthMonitoring();
+
+        // Setup Routes
+        this.setupRoutes();
     }
 
     async createInstance(phone, config = {}) {
@@ -1646,6 +1648,10 @@ class WhatsAppSessionManager extends EventEmitter {
             ROUTE('+POST /api/config/{phone}/', function (phone) {
                 let t = inst.instances.get(phone);
                 var self = this;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 var body = self.body;
                 t.memory_refresh(body, function () {
                     self.success();
@@ -1655,12 +1661,20 @@ class WhatsAppSessionManager extends EventEmitter {
             ROUTE('+GET /api/config/{phone}/', function (phone) {
                 let t = inst.instances.get(phone);
                 var self = this;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 self.json(t.Data);
             });
 
             ROUTE('+POST /api/rpc/{phone}/', function (phone) {
                 let t = inst.instances.get(phone);
                 var self = this;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 var payload = self.body;
                 self.ws = false;
                 t.message(payload, self);
@@ -1669,21 +1683,39 @@ class WhatsAppSessionManager extends EventEmitter {
             ROUTE('+POST /api/send/{phone}/', function (phone) {
                 let t = inst.instances.get(phone);
                 var self = this;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 if (t.state == 'open') {
                     t.sendMessage(self.body);
                     t.usage(self);
                 }
-                self.success();
+
+                if (t.state == 'open')
+                    self.success();
+                else
+                    self.json({ success: false, state: t.state });
             });
 
             ROUTE('+POST /api/media/{phone}/', function () {
                 let t = inst.instances.get(this.phone);
                 var self = this;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 if (t.state == 'open') {
                     t.send_file(self.body);
                     t.usage(self);
                 }
-                self.success();
+
+
+                if (t.state == 'open')
+                    self.success();
+                else
+                    self.json({ success: false, state: t.state });
+
             });
 
             // Websocket server
@@ -1691,6 +1723,10 @@ class WhatsAppSessionManager extends EventEmitter {
                 let t = inst.instances.get(phone);
                 var self = this;
                 var socket = self;
+                if (!t) {
+                    self.throw404();
+                    return;
+                }
                 self.ws = true;
                 t.ws = socket;
                 self.autodestroy();
@@ -1722,7 +1758,7 @@ class WhatsAppSessionManager extends EventEmitter {
                         switch (msg.type) {
                             case 'text':
                                 if (t.state == 'open') {
-                                    t.sendMessage(msg);
+                                    t.send_message(msg);
                                 }
                                 break;
                             case 'file':
@@ -1731,7 +1767,10 @@ class WhatsAppSessionManager extends EventEmitter {
                                 }
                                 break;
                         }
-                        client.send({ success: true });
+                        if (t.state == 'open')
+                            client.send({ success: true });
+                        else
+                            client.send({ success: false, state: t.state });
                     }
                 });
                 

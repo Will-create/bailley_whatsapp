@@ -22,7 +22,7 @@ ON('ready', async function () {
             instance.on('message', msg => console.log(`[${instance.phone}] Message:`, msg));
             instance.on('logged-out', () => console.warn(`[${instance.phone}] Logged out.`));
             instance.on('error', err => console.error(`[${instance.phone}] Error:`, err));
-            instance.on('shutdown', () => console.log(`[${instance.phone}] Shutdown.`));
+            instance.on('shutdown', (reason) => console.log(`[${instance.phone}] Shutdown.${reason}`));
             instance.on('ask', (obj) => console.log(`[${instance.phone}] Reconnecting...`, obj));
 
 
