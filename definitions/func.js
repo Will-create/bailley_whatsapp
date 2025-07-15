@@ -89,10 +89,12 @@ FUNC.processButton = function (buttons) {
 
 
 // FUNC fn to return formatted data from the above object with only phone
-FUNC.getFormattedData = function (phone, baseurl) {
+FUNC.getFormattedData = function (phone, baseurl, managerid) {
 
     let data =  {
         name: 'Muald',
+        managerid: managerid,
+        clusterid: F.id,
         mode: 'code',
         token: CONF.token || GUID(35),
         baseurl: baseurl || 'https://whatsapp.muald.com',
@@ -108,10 +110,12 @@ FUNC.getFormattedData = function (phone, baseurl) {
         sendrecording: false
     }
 
-
     return {
         data: data,
-        id: data.id
+        id: data.id,
+        clusterid: data.clusterid,
+        managerid: data.managerid,
+        phone: phone
     }
 };
 

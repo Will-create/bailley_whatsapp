@@ -5,6 +5,14 @@ const pino = require('pino');
 const EventEmitter = require('events');
 const os = require('os');
 
+if (!MAIN.instances) {
+    MAIN.instances = new Map();
+}
+
+if (!MAIN.clusters) {
+    MAIN.clusters = new Map();
+}
+
 
 const silentLogger = {
     info: NOOP,
@@ -15,7 +23,7 @@ const silentLogger = {
     child: () => silentLogger
 };
 
-// Production-grade logger with levels and structured logging
+// Produc   tion-grade logger with levels and structured logging
 const createLogger = (phone) => {
     return silentLogger;
     return pino({
@@ -239,7 +247,7 @@ class WhatsAppInstance extends EventEmitter {
         let filename = PATH.databases('memorize_' + phone + '.json');
         // check if memorize file exists, if not create it
         if (!Total.Fs.existsSync(filename)) { 
-            Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, CONF.baseurl), null, 2));
+            Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, CONF.baseurl, config.managerid), null, 2));
         }
 
         var w = t.memorize = MEMORIZE(phone);
@@ -251,6 +259,8 @@ class WhatsAppInstance extends EventEmitter {
         t.id = data.id;
         t.port = CONF.port;
         t.ip = CONF.ip;
+        t.cluterid = data.clusterid;
+        t.managerid = data.managerid || config.managerid;
         t.origin = t.config.origin || 'zapwize';
         t.plans = [];
         t.chats = [];
@@ -517,6 +527,19 @@ class WhatsAppInstance extends EventEmitter {
         await this.socket.sendMessage(data.chatid, { text: data.content }, options);
     }
 
+    async onwhatsapp(data) {
+        if (!data.chatid.includes('@')) {
+            data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
+        }
+        
+        // use onWhatsapp
+        [result] = await this.socket.onWhatsApp(data.chatid);
+
+        return result;
+
+    }
+
+
     async send_file(data) {
         if (!data.chatid.includes('@')) {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
@@ -564,7 +587,7 @@ class WhatsAppInstance extends EventEmitter {
 
     async message(msg, ctrl) {
         var t = this;
-        var output = { reqid: msg.reqid || UID(), state: t.state };
+        var output = { reqid: msg.reqid || UID(), state: t.state, success: true };
         var topic = msg.topic;
         switch (topic) {
             case 'state':
@@ -586,6 +609,12 @@ class WhatsAppInstance extends EventEmitter {
                 break;
             case 'logs':
                 output.content = t.logs;
+                break;
+            case 'onwhatsapp':
+                if (t.state == 'open') 
+                    output.content = await t.onwhatsapp(msg);
+                else
+                    output.success = false;
                 break;
             case 'config':
                 output.content = t.Data;
@@ -630,7 +659,7 @@ class WhatsAppInstance extends EventEmitter {
             t.number && t.refresh_plans();
         }
 
-        console.log('Instance: ' + t.phone + ' - ' + t.state);
+        console.log('Instance: [' + F.id + '] ' + t.phone + ' - ' + t.state);
         t.refresh_days();
         t.refresh_limits();
     }
@@ -1429,38 +1458,105 @@ class WhatsAppInstance extends EventEmitter {
     }
 }
 
-// Session manager with clustering and load balancing
-class WhatsAppSessionManager extends EventEmitter {
+class ClusterWhatsAppSessionManager extends EventEmitter {
     constructor(config = {}) {
         super();
         this.config = config;
-        this.instances = new Map();
-        this.logger = createLogger('session-manager');
+        this.instances = MAIN.instances;
+        this.index = config.index || 0;
+        this.logger = createLogger('session-manager-' + F.id + '-' + this.index);
         this.maxInstances = config.maxInstances || 1000;
         this.instancesPerWorker = config.instancesPerWorker || 100;
-        this.workerPool = [];
-        this.roundRobinIndex = 0;
-
+        this.clusterId = F.id;
+        
+        // Cluster-specific configurations
+        this.maxInstancesPerCluster = Math.floor(this.maxInstances / (config.expectedClusters || 4));
+        this.clusterInstanceMap = MAIN.clusters; // Track which cluster has which instances
+        
         // Health monitoring
         this.healthCheckInterval = config.healthCheckInterval || 30000;
         this.startHealthMonitoring();
 
-        // Setup Routes
-        this.setupRoutes();
+        // Setup cluster event handlers
+        this.setupClusterHandlers();
+
+
+    }
+
+    setupClusterHandlers() {
+        // Listen for cluster-wide events
+        ON('cluster-instance-created', (data) => {
+            if (data.clusterId !== this.clusterId) {
+                this.clusterInstanceMap.set(data.phone, data.clusterId);
+                this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance created');
+            }
+        });
+
+        ON('cluster-instance-removed', (data) => {
+            if (data.clusterId !== this.clusterId) {
+                this.clusterInstanceMap.delete(data.phone);
+                this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance removed');
+            }
+        });
+
+        ON('cluster-health-check', (data) => {
+            // Respond with local health status
+            EMIT2('cluster-health-response', {
+                clusterId: this.clusterId,
+                health: this.getLocalHealthStatus(),
+                requestId: data.requestId
+            });
+        });
+
+        ON('cluster-find-instance', (data) => {
+            const instance = this.instances.get(data.phone);
+            if (instance) {
+                EMIT2('cluster-instance-found', {
+                    phone: data.phone,
+                    clusterId: this.clusterId,
+                    requestId: data.requestId,
+                    found: true
+                });
+            }
+        });
+
+        ON('cluster-broadcast-message', (data) => {
+            // Handle messages that need to be broadcasted to all instances
+            if (data.targetCluster === this.clusterId || data.targetCluster === 'all') {
+                const instance = this.instances.get(data.phone);
+                if (instance) {
+                    instance.handleClusterMessage(data.message);
+                }
+            }
+        });
     }
 
     async createInstance(phone, config = {}) {
+        // Check if instance exists locally
         if (this.instances.has(phone)) {
-            throw new Error(`Instance for ${phone} already exists`);
+            throw new Error(`Instance for ${phone} already exists on cluster ${this.clusterId}`);
         }
 
-        if (this.instances.size >= this.maxInstances) {
-            throw new Error('Maximum number of instances reached');
+        // Check if instance exists on other clusters
+        const existsOnOtherCluster = await this.checkInstanceExistsGlobally(phone);
+        if (existsOnOtherCluster) {
+            throw new Error(`Instance for ${phone} already exists on cluster ${existsOnOtherCluster}`);
+        }
+
+        if (this.instances.size >= this.maxInstancesPerCluster) {
+            throw new Error(`Maximum number of instances per cluster reached (${this.maxInstancesPerCluster})`);
         }
 
         try {
-            const instanceConfig = { ...this.config, ...config };
-            const instance = new WhatsAppInstance(phone, instanceConfig);
+            const instanceConfig = { 
+                ...this.config, 
+                ...config,
+                clusterId: this.clusterId,
+                clusterAware: true,
+                managerid: this.index
+            };
+            
+            const instance = new ClusterAwareWhatsAppInstance(phone, instanceConfig);
 
             // Setup instance event handlers
             this.setupInstanceHandlers(instance);
@@ -1468,16 +1564,28 @@ class WhatsAppSessionManager extends EventEmitter {
             // Initialize instance
             await instance.initialize();
 
-            // Store instance
+            // Store instance locally
             this.instances.set(phone, instance);
 
-            this.logger.info({ phone, instanceId: instance.id }, 'Instance created successfully');
+            // Notify other clusters
+            EMIT2('cluster-instance-created', {
+                phone: phone,
+                clusterId: this.clusterId,
+                timestamp: Date.now()
+            });
+
+            this.logger.info({ 
+                phone, 
+                instanceId: instance.id, 
+                clusterId: this.clusterId 
+            }, 'Instance created successfully');
+            
             this.emit('instance-created', { phone, instance });
 
             return instance;
 
         } catch (error) {
-            this.logger.error({ phone, error }, 'Failed to create instance');
+            this.logger.error({ phone, error, clusterId: this.clusterId }, 'Failed to create instance');
             throw error;
         }
     }
@@ -1492,65 +1600,185 @@ class WhatsAppSessionManager extends EventEmitter {
         return this.createInstance(phone, pairingConfig);
     }
 
+    async checkInstanceExistsGlobally(phone) {
+        return new Promise((resolve) => {
+            const requestId = Date.now() + Math.random();
+            let responses = 0;
+            const timeout = setTimeout(() => {
+                resolve(false);
+            }, 1000);
+
+            const responseHandler = (data) => {
+                if (data.requestId === requestId) {
+                    responses++;
+                    if (data.found) {
+                        clearTimeout(timeout);
+                        resolve(data.clusterId);
+                    }
+                }
+            };
+
+            ON('cluster-instance-found', responseHandler);
+
+            EMIT2('cluster-find-instance', {
+                phone: phone,
+                requestId: requestId
+            });
+        });
+    }
+
+
+    restore_session(data){
+        console.log(`[${F.id}] restoring ${data.phone}`);
+        if (data.managerid == this.index && data.clusterid == this.clusterId) {
+            this.createInstance(data.phone);
+        }
+    }
+
     setupInstanceHandlers(instance) {
+
         instance.on('error', (error) => {
-            this.logger.error({ instanceId: instance.id, phone: instance.phone, error }, 'Instance error');
+            this.logger.error({ 
+                instanceId: instance.id, 
+                phone: instance.phone, 
+                error,
+                clusterId: this.clusterId 
+            }, 'Instance error');
             this.emit('instance-error', { instance, error });
         });
 
+
         instance.on('pairing-code', (data) => {
-            this.logger.info({ instanceId: instance.id, phone: data.phone, code: data.code }, 'Pairing code generated');
+            this.logger.info({ 
+                instanceId: instance.id, 
+                phone: data.phone, 
+                code: data.code,
+                clusterId: this.clusterId 
+            }, 'Pairing code generated');
             this.emit('pairing-code', data);
         });
 
         instance.on('pairing-code-expired', (data) => {
-            this.logger.warn({ instanceId: instance.id, phone: data.phone }, 'Pairing code expired');
+            this.logger.warn({ 
+                instanceId: instance.id, 
+                phone: data.phone,
+                clusterId: this.clusterId 
+            }, 'Pairing code expired');
             this.emit('pairing-code-expired', data);
         });
 
         instance.on('pairing-code-error', (data) => {
-            this.logger.error({ instanceId: instance.id, phone: data.phone, error: data.error }, 'Pairing code error');
+            this.logger.error({ 
+                instanceId: instance.id, 
+                phone: data.phone, 
+                error: data.error,
+                clusterId: this.clusterId 
+            }, 'Pairing code error');
             this.emit('pairing-code-error', data);
         });
 
         instance.on('resource-critical', async (data) => {
-            this.logger.warn({ instanceId: instance.id, phone: instance.phone, data }, 'Instance resource critical');
-            // Remove instance to prevent system instability
+            this.logger.warn({ 
+                instanceId: instance.id, 
+                phone: instance.phone, 
+                data,
+                clusterId: this.clusterId 
+            }, 'Instance resource critical');
             await this.removeInstance(instance.phone, 'resource-critical');
         });
 
         instance.on('max-reconnect-attempts', async () => {
-            this.logger.warn({ instanceId: instance.id, phone: instance.phone }, 'Instance max reconnect attempts reached');
+            this.logger.warn({ 
+                instanceId: instance.id, 
+                phone: instance.phone,
+                clusterId: this.clusterId 
+            }, 'Instance max reconnect attempts reached');
             await this.removeInstance(instance.phone, 'max-reconnect-attempts');
         });
 
         instance.on('shutdown', () => {
-            this.logger.info({ instanceId: instance.id, phone: instance.phone }, 'Instance shutdown');
+            this.logger.info({ 
+                instanceId: instance.id, 
+                phone: instance.phone,
+                clusterId: this.clusterId 
+            }, 'Instance shutdown');
             this.instances.delete(instance.phone);
+        });
+
+        // Cluster-specific handlers
+        instance.on('cluster-message', (data) => {
+            // Broadcast message to other clusters if needed
+            if (data.broadcast) {
+                EMIT2('cluster-broadcast-message', {
+                    phone: instance.phone,
+                    message: data.message,
+                    targetCluster: data.targetCluster || 'all',
+                    sourceCluster: this.clusterId
+                });
+            }
         });
     }
 
     async removeInstance(phone, reason = 'manual') {
         const instance = this.instances.get(phone);
         if (!instance) {
-            throw new Error(`Instance for ${phone} not found`);
+            throw new Error(`Instance for ${phone} not found on cluster ${this.clusterId}`);
         }
 
         try {
             await instance.gracefulShutdown(reason);
             this.instances.delete(phone);
 
-            this.logger.info({ phone, reason }, 'Instance removed successfully');
+            // Notify other clusters
+            EMIT2('cluster-instance-removed', {
+                phone: phone,
+                clusterId: this.clusterId,
+                reason: reason,
+                timestamp: Date.now()
+            });
+
+            this.logger.info({ 
+                phone, 
+                reason, 
+                clusterId: this.clusterId 
+            }, 'Instance removed successfully');
+            
             this.emit('instance-removed', { phone, reason });
 
         } catch (error) {
-            this.logger.error({ phone, error }, 'Error removing instance');
+            this.logger.error({ 
+                phone, 
+                error, 
+                clusterId: this.clusterId 
+            }, 'Error removing instance');
             throw error;
         }
     }
 
     getInstance(phone) {
         return this.instances.get(phone);
+    }
+
+    async getInstanceGlobally(phone) {
+        // First check locally
+        const localInstance = this.instances.get(phone);
+        if (localInstance) {
+            return { instance: localInstance, clusterId: this.clusterId };
+        }
+
+        // Check cluster map
+        const clusterId = this.clusterInstanceMap.get(phone);
+        if (clusterId) {
+            return { instance: null, clusterId: clusterId };
+        }
+
+        // Query all clusters
+        const clusterLocation = await this.checkInstanceExistsGlobally(phone);
+        if (clusterLocation) {
+            return { instance: null, clusterId: clusterLocation };
+        }
+
+        return null;
     }
 
     getAllInstances() {
@@ -1560,7 +1788,7 @@ class WhatsAppSessionManager extends EventEmitter {
     async refreshPairingCode(phone) {
         const instance = this.getInstance(phone);
         if (!instance) {
-            throw new Error(`Instance for ${phone} not found`);
+            throw new Error(`Instance for ${phone} not found on cluster ${this.clusterId}`);
         }
 
         return instance.refreshPairingCode();
@@ -1569,19 +1797,20 @@ class WhatsAppSessionManager extends EventEmitter {
     getPairingCode(phone) {
         const instance = this.getInstance(phone);
         if (!instance) {
-            throw new Error(`Instance for ${phone} not found`);
+            throw new Error(`Instance for ${phone} not found on cluster ${this.clusterId}`);
         }
 
         return instance.getCurrentPairingCode();
     }
 
-    getHealthStatus() {
+    getLocalHealthStatus() {
         const instances = this.getAllInstances();
         const health = instances.map(instance => instance.getHealth());
 
         return {
+            clusterId: this.clusterId,
             totalInstances: instances.length,
-            maxInstances: this.maxInstances,
+            maxInstancesPerCluster: this.maxInstancesPerCluster,
             healthyInstances: health.filter(h => h.state === 'open').length,
             pairingCodeInstances: health.filter(h => h.usePairingCode).length,
             activePairingCodes: health.filter(h => h.isPairingCodeActive).length,
@@ -1589,6 +1818,32 @@ class WhatsAppSessionManager extends EventEmitter {
             systemMemory: process.memoryUsage(),
             uptime: process.uptime(),
         };
+    }
+
+    async getGlobalHealthStatus() {
+        return new Promise((resolve) => {
+            const requestId = Date.now() + Math.random();
+            const responses = [];
+            const timeout = setTimeout(() => {
+                resolve({
+                    localHealth: this.getLocalHealthStatus(),
+                    clusterHealth: responses,
+                    totalClusters: responses.length + 1
+                });
+            }, 2000);
+
+            const responseHandler = (data) => {
+                if (data.requestId === requestId) {
+                    responses.push(data.health);
+                }
+            };
+
+            ON('cluster-health-response', responseHandler);
+
+            EMIT2('cluster-health-check', {
+                requestId: requestId
+            });
+        });
     }
 
     startHealthMonitoring() {
@@ -1612,18 +1867,23 @@ class WhatsAppSessionManager extends EventEmitter {
 
         // Remove unhealthy instances
         for (const instance of unhealthyInstances) {
-            this.logger.warn({ instanceId: instance.id, phone: instance.phone }, 'Removing unhealthy instance');
+            this.logger.warn({ 
+                instanceId: instance.id, 
+                phone: instance.phone,
+                clusterId: this.clusterId 
+            }, 'Removing unhealthy instance');
             await this.removeInstance(instance.phone, 'health-check-failed');
         }
 
         this.emit('health-check-completed', {
+            clusterId: this.clusterId,
             total: instances.length,
             unhealthy: unhealthyInstances.length,
         });
     }
 
     async gracefulShutdown() {
-        this.logger.info('Starting graceful shutdown of all instances');
+        this.logger.info({ clusterId: this.clusterId }, 'Starting graceful shutdown of all instances');
 
         if (this.healthTimer) {
             clearInterval(this.healthTimer);
@@ -1632,154 +1892,50 @@ class WhatsAppSessionManager extends EventEmitter {
         const instances = this.getAllInstances();
         const shutdownPromises = instances.map(instance =>
             instance.gracefulShutdown('manager-shutdown').catch(error =>
-                this.logger.error({ error, instanceId: instance.id }, 'Error during instance shutdown')
+                this.logger.error({ 
+                    error, 
+                    instanceId: instance.id,
+                    clusterId: this.clusterId 
+                }, 'Error during instance shutdown')
             )
         );
 
         await Promise.allSettled(shutdownPromises);
         this.instances.clear();
 
-        this.logger.info('All instances shutdown completed');
+        this.logger.info({ clusterId: this.clusterId }, 'All instances shutdown completed');
     }
 
-    setupRoutes() {
-        let inst = this;
-            // Setup routes
-            ROUTE('+POST /api/config/{phone}/', function (phone) {
-                let t = inst.instances.get(phone);
-                var self = this;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                var body = self.body;
-                t.memory_refresh(body, function () {
-                    self.success();
+}
+
+// Extended WhatsApp Instance with cluster awareness
+class ClusterAwareWhatsAppInstance extends WhatsAppInstance {
+    constructor(phone, config) {
+        super(phone, config);
+        this.clusterId = config.clusterId;
+        this.clusterAware = config.clusterAware || false;
+    }
+
+    handleClusterMessage(message) {
+        // Handle messages from other clusters
+        if (this.ws_clients) {
+            Object.values(this.ws_clients).forEach(client => {
+                client.send({
+                    type: 'cluster-message',
+                    clusterId: message.sourceCluster,
+                    data: message.data
                 });
             });
+        }
+    }
 
-            ROUTE('+GET /api/config/{phone}/', function (phone) {
-                let t = inst.instances.get(phone);
-                var self = this;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                self.json(t.Data);
-            });
-
-            ROUTE('+POST /api/rpc/{phone}/', function (phone) {
-                let t = inst.instances.get(phone);
-                var self = this;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                var payload = self.body;
-                self.ws = false;
-                t.message(payload, self);
-            }); 
-
-            ROUTE('+POST /api/send/{phone}/', function (phone) {
-                let t = inst.instances.get(phone);
-                var self = this;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                if (t.state == 'open') {
-                    t.sendMessage(self.body);
-                    t.usage(self);
-                }
-
-                if (t.state == 'open')
-                    self.success();
-                else
-                    self.json({ success: false, state: t.state });
-            });
-
-            ROUTE('+POST /api/media/{phone}/', function () {
-                let t = inst.instances.get(this.phone);
-                var self = this;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                if (t.state == 'open') {
-                    t.send_file(self.body);
-                    t.usage(self);
-                }
-
-
-                if (t.state == 'open')
-                    self.success();
-                else
-                    self.json({ success: false, state: t.state });
-
-            });
-
-            // Websocket server
-            ROUTE('+SOCKET /api/ws/{phone}/', function (phone) {
-                let t = inst.instances.get(phone);
-                var self = this;
-                var socket = self;
-                if (!t) {
-                    self.throw404();
-                    return;
-                }
-                self.ws = true;
-                t.ws = socket;
-                self.autodestroy();
-                
-                socket.on('open', function (client) {
-                    client.phone = t.phone;
-                    t.ws_clients[client.id] = client;
-
-                    var timeout = setTimeout(function () {
-                        if (t.state == 'open') {
-                            client.send({ type: 'ready' });
-                        } else {
-                            for (var log of t.logs) {
-                                if (log.name == 'whatsapp_ready')
-                                    client.send({ type: 'ready' });
-                            }
-                        }
-                        clearTimeout(timeout);
-                    }, 2000);
-                });
-                
-                socket.on('message', function (client, msg) {
-                    if (msg && msg.topic) {
-                        self.client = client;
-                        t.message(msg, self);
-                    }
-
-                    if (msg && msg.type) {
-                        switch (msg.type) {
-                            case 'text':
-                                if (t.state == 'open') {
-                                    t.send_message(msg);
-                                }
-                                break;
-                            case 'file':
-                                if (t.state == 'open') {
-                                    t.send_file(msg);
-                                }
-                                break;
-                        }
-                        if (t.state == 'open')
-                            client.send({ success: true });
-                        else
-                            client.send({ success: false, state: t.state });
-                    }
-                });
-                
-                socket.on('disconnect', function (client) {
-                    console.log('Client disconnected:', client.id);
-                    delete t.ws_clients[client.id];
-                });
-            });
-
+    getHealth() {
+        const health = super.getHealth();
+        return {
+            ...health,
+            clusterId: this.clusterId,
+            clusterAware: this.clusterAware
+        };
     }
 }
 
@@ -1790,3 +1946,683 @@ MAIN.WhatsAppSessionManager = WhatsAppSessionManager;
 MAIN.ResourceMonitor = ResourceMonitor;
 MAIN.CircuitBreaker = CircuitBreaker;
 MAIN.RedisManager = RedisManager;
+MAIN.ClusterAwareWhatsAppInstance = ClusterAwareWhatsAppInstance;
+MAIN.ClusterWhatsAppSessionManager = ClusterWhatsAppSessionManager;
+
+
+class BootLoader extends EventEmitter {
+    constructor(config = {}) {
+        super();
+        this.config = config;
+        this.clusters = new Map();
+        this.roundRobinIndex = 0;
+        this.healthCheckInterval = config.healthCheckInterval || 10000;
+        this.maxInstancesPerCluster = config.maxInstancesPerCluster || 250;
+        this.instanceDistribution = new Map(); // phone -> clusterId mapping
+        
+        // Strategy for load balancing
+        this.balancingStrategy = config.balancingStrategy || 'round-robin'; // round-robin, least-loaded, resource-aware
+        
+        this.setupClusterMonitoring();
+        this.startHealthMonitoring();
+    }
+
+    setupClusterMonitoring() {
+        // Listen for cluster health updates
+        ON('cluster-health-response', (data) => {
+            this.updateClusterHealth(data.clusterId, data.health);
+        });
+
+        // Listen for instance creation/removal across clusters
+        ON('cluster-instance-created', (data) => {
+            this.instanceDistribution.set(data.phone, data.clusterId);
+            this.updateClusterInstanceCount(data.clusterId, 1);
+        });
+
+        ON('cluster-instance-removed', (data) => {
+            this.instanceDistribution.delete(data.phone);
+            this.updateClusterInstanceCount(data.clusterId, -1);
+        });
+    }
+
+    updateClusterHealth(clusterId, health) {
+        const existing = this.clusters.get(clusterId) || {};
+        this.clusters.set(clusterId, {
+            ...existing,
+            health: health,
+            lastHealthUpdate: Date.now(),
+            isHealthy: this.isClusterHealthy(health)
+        });
+    }
+
+    updateClusterInstanceCount(clusterId, delta) {
+        const existing = this.clusters.get(clusterId) || { instanceCount: 0 };
+        existing.instanceCount = Math.max(0, existing.instanceCount + delta);
+        this.clusters.set(clusterId, existing);
+    }
+
+    isClusterHealthy(health) {
+        if (!health) return false;
+        
+        const memoryUsage = health.systemMemory;
+        const memoryThreshold = this.config.memoryThreshold || 0.8;
+        const memoryUsagePercent = memoryUsage.heapUsed / memoryUsage.heapTotal;
+        
+        return memoryUsagePercent < memoryThreshold && 
+               health.healthyInstances > 0 &&
+               health.totalInstances < this.maxInstancesPerCluster;
+    }
+
+    getOptimalClusterForNewInstance(phone) {
+        // Check if instance already exists
+        const existingCluster = this.instanceDistribution.get(phone);
+        if (existingCluster) {
+            return { clusterId: existingCluster, reason: 'existing' };
+        }
+
+        const healthyClusters = Array.from(this.clusters.entries())
+            .filter(([_, cluster]) => cluster.isHealthy)
+            .map(([clusterId, cluster]) => ({ clusterId, ...cluster }));
+
+        if (healthyClusters.length === 0) {
+            throw new Error('No healthy clusters available');
+        }
+
+        let selectedCluster;
+
+        switch (this.balancingStrategy) {
+            case 'least-loaded':
+                selectedCluster = healthyClusters.reduce((min, cluster) => 
+                    cluster.instanceCount < min.instanceCount ? cluster : min
+                );
+                break;
+                
+            case 'resource-aware':
+                selectedCluster = healthyClusters.reduce((best, cluster) => {
+                    const currentScore = this.calculateClusterScore(cluster);
+                    const bestScore = this.calculateClusterScore(best);
+                    return currentScore > bestScore ? cluster : best;
+                });
+                break;
+                
+            case 'round-robin':
+            default:
+                this.roundRobinIndex = (this.roundRobinIndex + 1) % healthyClusters.length;
+                selectedCluster = healthyClusters[this.roundRobinIndex];
+                break;
+        }
+
+        return { 
+            clusterId: selectedCluster.clusterId, 
+            reason: this.balancingStrategy,
+            clusterLoad: selectedCluster.instanceCount
+        };
+    }
+
+    calculateClusterScore(cluster) {
+        if (!cluster.health) return 0;
+        
+        const memoryScore = 1 - (cluster.health.systemMemory.heapUsed / cluster.health.systemMemory.heapTotal);
+        const loadScore = 1 - (cluster.instanceCount / this.maxInstancesPerCluster);
+        const healthScore = cluster.health.healthyInstances / Math.max(1, cluster.health.totalInstances);
+        
+        return (memoryScore * 0.4) + (loadScore * 0.4) + (healthScore * 0.2);
+    }
+
+    getClusterForInstance(phone) {
+        return this.instanceDistribution.get(phone);
+    }
+
+    getClusterStats() {
+        const stats = {
+            totalClusters: this.clusters.size,
+            healthyClusters: 0,
+            totalInstances: 0,
+            clusterDetails: []
+        };
+
+        for (const [clusterId, cluster] of this.clusters) {
+            if (cluster.isHealthy) stats.healthyClusters++;
+            stats.totalInstances += cluster.instanceCount || 0;
+            
+            stats.clusterDetails.push({
+                clusterId,
+                isHealthy: cluster.isHealthy,
+                instanceCount: cluster.instanceCount || 0,
+                memoryUsage: cluster.health?.systemMemory,
+                lastHealthUpdate: cluster.lastHealthUpdate,
+                score: this.calculateClusterScore(cluster)
+            });
+        }
+
+        return stats;
+    }
+
+    startHealthMonitoring() {
+        this.healthTimer = setInterval(() => {
+            this.performClusterHealthCheck();
+        }, this.healthCheckInterval);
+    }
+
+    performClusterHealthCheck() {
+        // Request health from all clusters
+        const requestId = Date.now() + Math.random();
+        EMIT2('cluster-health-check', { requestId });
+        
+        // Clean up stale cluster data
+        const staleThreshold = Date.now() - (this.healthCheckInterval * 3);
+        for (const [clusterId, cluster] of this.clusters) {
+            if (cluster.lastHealthUpdate < staleThreshold) {
+                this.clusters.delete(clusterId);
+                console.warn(`Removed stale cluster: ${clusterId}`);
+            }
+        }
+    }
+
+    async redistributeInstances() {
+        // Get current distribution
+        const stats = this.getClusterStats();
+        const avgInstancesPerCluster = stats.totalInstances / stats.healthyClusters;
+        
+        // Find overloaded clusters
+        const overloadedClusters = stats.clusterDetails.filter(
+            cluster => cluster.isHealthy && cluster.instanceCount > avgInstancesPerCluster * 1.5
+        );
+        
+        // Find underloaded clusters
+        const underloadedClusters = stats.clusterDetails.filter(
+            cluster => cluster.isHealthy && cluster.instanceCount < avgInstancesPerCluster * 0.5
+        );
+
+        if (overloadedClusters.length > 0 && underloadedClusters.length > 0) {
+            console.log('Redistribution needed', { overloadedClusters, underloadedClusters });
+            
+            // Emit redistribution event
+            EMIT2('cluster-redistribution-needed', {
+                overloaded: overloadedClusters,
+                underloaded: underloadedClusters,
+                average: avgInstancesPerCluster
+            });
+        }
+    }
+
+    shutdown() {
+        if (this.healthTimer) {
+            clearInterval(this.healthTimer);
+        }
+    }
+}
+
+
+class ManagerHub extends BootLoader {
+    constructor(config = {}) {
+        super(config);
+        this.mincount = config.mincount || 4;
+        this.maxcount = config.maxcount || 10;
+        this.count  = config.count || this.mincount;
+        this.managers = {};
+        this.createmanagers();
+    }
+
+
+    createmanagers () {
+        for (var i = 0; i < this.count; i++) {
+            let manager = new ClusterWhatsAppSessionManager({index: i });
+            this.managers[i] = manager;
+        }
+        this.sethandlers();
+
+        setTimeout(() => {
+            this.emit('ready', this.managers);
+        }, 1000);
+    }
+
+
+    sethandlers() {
+        this.on('restore', function(data) {
+            let values = Object.values(this.managers);
+            for (var value of values) {
+                value.restore_session(data);
+            }
+        })
+    }
+
+
+    setupRoutes() {
+        
+        // Cluster-aware instance lookup helper
+        const findInstanceCluster = async (phone) => {
+            const local = MAIN.instances.get(phone);
+            if (local) return { instance: local, local: true };
+            
+            const global = await inst.getInstanceGlobally(phone);
+            return global ? { clusterId: global.clusterId, local: false } : null;
+        };
+
+
+        NEWSCHEMA('ManagerHub', function(schema) {
+            schema.action('config_save', {
+                name: 'Update or save Config data',
+                params: '*phone:String',
+                route: '+POST /api/config/{phone}/',
+                action: async function($, model) {
+                    let phone = $.params.phone;
+                    const result = await findInstanceCluster(phone);
+                    
+                    if (!result) {
+                        $.invalid('Whatsapp session not found');
+                        return;
+                    }
+
+                    if (!result.local) {
+                        // Proxy to correct cluster
+                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        return;
+                    }
+
+                    result.instance.memory_refresh(model, function () {
+                        $.success();
+                    });
+                }
+            });
+
+            schema.action('config_read', {
+                name: 'Read informations about a given config',
+                params: '*phone:String',
+                route: '+GET /api/config/{phone}/',
+                action: async function($, model) {
+                    let phone = $.params.phone;
+                    const result = await findInstanceCluster(phone);
+                    
+                    if (!result) {
+                        $.invalid('Whatsapp session not found');
+                        return;
+                    }
+            
+                    if (!result.local) {
+                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        return;
+                    }
+                    $.callback(result.instance.Data);
+                }
+            });
+
+
+            schema.action('rpc', {
+                name: 'Remote PC Controller',
+                params: '*phone:String',
+                route: '+POST /api/rpc/{phone}/',
+                input: 'topic:String,type:String,content:String,data:Object',
+                action: async function($, model) {
+                    let phone = $.params.phone;
+                    const result = await findInstanceCluster(phone);
+                    if (!result) {
+                        $.invalid('Whatsapp session not found');
+                        return;
+                    }
+                    if (!result.local) {
+                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        return;
+                    }
+                    $.ws = false;
+                    result.instance.message(model, $);
+                }
+            });
+
+            schema.action('send', {
+                name: 'Send text message to a whatsapp user',
+                params: '*phone:String',
+                input: '*chatid:String,content:String',
+                route: '+POST /api/send/{phone}/',
+                action: async function($, model) {
+                    let phone =  $.params.phone;
+                    const result = await findInstanceCluster(phone);
+                    
+                    if (!result) {
+                        $.invalid('Whatsapp instance not found');
+                        return;
+                    }
+            
+                    if (!result.local) {
+                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        return;
+                    }
+            
+                    const instance = result.instance;
+                    if (instance.state == 'open') {
+                        instance.sendMessage(model);
+                        instance.usage($);
+                    }
+            
+                    if (instance.state == 'open')
+                        $.success();
+                    else
+                        $.callback({ success: false, state: instance.state });
+
+                }
+            });
+
+
+            schema.action('media', {
+                name: 'Send Media to a whatsapp number',
+                input: '*chatid:Phone,type:String,topic:String,content:Object',
+                params: '*phone:String',
+                route: '+POST /api/media/{phone}/',
+                action: async function($, model) {
+                    let phone = $.params.phone;
+                    const result = await findInstanceCluster(phone);
+                    
+                    if (!result) {
+                        $.invalid('Whatsappp session not Found');
+                        return;
+                    }
+            
+                    if (!result.local) {
+                        $.json({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        return;
+                    }
+            
+                    const instance = result.instance;
+                    if (instance.state == 'open') {
+                        instance.send_file($.body);
+                        instance.usage($);
+                    }
+            
+                    if (instance.state == 'open')
+                        $.success();
+                    else
+                        $.callback({ success: false, state: instance.state });
+                    
+                }
+            });
+
+        });
+
+  
+        // Cluster-aware WebSocket handling
+        ROUTE('+SOCKET /api/ws/{phone}/', async function (phone) {
+            const result = await findInstanceCluster(phone);
+            const self = this;
+            const socket = self;
+            
+            if (!result) {
+                self.throw404();
+                return;
+            }
+
+            
+            const instance = result.instance;
+            self.ws = true;
+            instance.ws = socket;
+            self.autodestroy();
+            
+            socket.on('open', function (client) {
+                client.phone = instance.phone;
+                instance.ws_clients[client.id] = client;
+
+                MAIN.clusterproxy && MAIN.clusterproxy.setconnection(phone, F.id);
+
+                const timeout = setTimeout(function () {
+                    if (instance.state == 'open') {
+                        client.send({ type: 'ready', clusterId: F.id });
+                    } else {
+                        for (const log of instance.logs) {
+                            if (log.name == 'whatsapp_ready')
+                                client.send({ type: 'ready', clusterId: F.id });
+                        }
+                    }
+                    clearTimeout(timeout);
+                }, 2000);
+            });
+            socket.on('message', function (client, msg) {
+                if (msg && msg.topic) {
+                    self.client = client;
+                    instance.message(msg, self);
+                }
+
+                if (msg && msg.type) {
+                    switch (msg.type) {
+                        case 'text':
+                            if (instance.state == 'open') {
+                                instance.send_message(msg);
+                            }
+                            break;
+                        case 'file':
+                            if (instance.state == 'open') {
+                                instance.send_file(msg);
+                            }
+                            break;
+                        case 'cluster-broadcast':
+                            // Handle cluster-wide broadcasts
+                            if (msg.broadcast && instance.state == 'open') {
+                                instance.emit('cluster-message', {
+                                    message: msg.data,
+                                    broadcast: true,
+                                    targetCluster: msg.targetCluster || 'all'
+                                });
+                            }
+                            break;
+                    }
+                    
+                    if (instance.state == 'open')
+                        client.send({ success: true, clusterId: inst.clusterId });
+                    else
+                        client.send({ success: false, state: instance.state, clusterId: inst.clusterId });
+                }
+            });
+            
+            socket.on('disconnect', function (client) {
+                console.log('Client disconnected:', client.id, 'cluster:', inst.clusterId);
+                delete instance.ws_clients[client.id];
+            });
+        });
+
+        // Cluster management routes
+        ROUTE('+GET /api/cluster/health/', async function() {
+            const health = await inst.getGlobalHealthStatus();
+            this.json(health);
+        });
+
+        ROUTE('+GET /api/cluster/instances/', function() {
+            const instances = Array.from(MAIN.clusters.entries()).map(([phone, clusterId]) => ({
+                phone,
+                clusterId,
+                local: false
+            }));
+            
+            const localInstances = Array.values(MAIN.instances).map(instance => ({
+                phone: instance.phone,
+                clusterId: inst.clusterId,
+                local: true,
+                state: instance.state
+            }));
+
+            this.json({
+                clusterId: inst.clusterId,
+                localInstances,
+                remoteInstances: instances,
+                total: localInstances.length + instances.length
+            });
+        });
+    }
+
+}
+
+class ClusterProxy {
+    constructor(loadBalancer, config = {}) {
+        this.loadBalancer = loadBalancer;
+        this.config = config;
+        this.clusterEndpoints = new Map();
+        this.connections = MAIN.connections = new Map();
+        this.setuplistenners();
+    }
+
+    registerClusterEndpoint(clusterId, endpoint) {
+        this.clusterEndpoints.set(clusterId, endpoint);
+    }
+
+    async proxyRequest(phone, method, path, data) {
+        const clusterId = this.loadBalancer.getClusterForInstance(phone);
+        
+        if (!clusterId) {
+            throw new Error(`No cluster found for instance: ${phone}`);
+        }
+
+        const endpoint = this.clusterEndpoints.get(clusterId);
+        if (!endpoint) {
+            throw new Error(`No endpoint registered for cluster: ${clusterId}`);
+        }
+
+        // Here you would implement actual HTTP request proxying
+        // This is a placeholder for the proxy logic
+        return {
+            clusterId,
+            endpoint,
+            method,
+            path,
+            data,
+            // result: await httpRequest(endpoint + path, method, data)
+        };
+    }
+
+
+    async getresponse(data, timeout) {
+        return new Promise(function(resolve, reject) {
+            const reqid = UID();
+            let responses = 0;
+
+            let tm = setTimeout(() => {
+                resolve(false);
+            }, timeout || 30000);
+
+            const callback = function(response) {
+                if (response.reqid === reqid) {
+                    responses++;
+                    if (response.found) {
+                        clearTimeout(tm);
+                        resolve(response.response);
+                    }
+                }
+            }
+            ON('cluster-proxy-response', callback);
+            EMIT2('cluster-proxy-request', { reqid, data });
+        })
+    }
+
+    async setresponse(payload) {
+        if (!payload.data || !payload.data.clusterId)
+            return;
+
+        let data = payload.data;
+        let reqid = payload.reqid;
+        let clusterid = data.clusterId;
+        if (clusterid == F.id) {
+            let schema = data.schema;
+            let action = data.action;
+            if (schema && action) {
+                let builder = CALL(schema + ' --> ' + action, data.data);
+                data.query && builder.query(data.query);
+                data.params && builder.params(data.params);
+                data.user && builder.user(data.user);
+                builder.callback(function(err, res) {
+                    if (!err) {
+                        EMIT2('cluster-proxy-response', { clusterId: F.id, found: true, response: res, reqid });
+                    }
+                });
+
+            }
+        }
+    }
+
+    setconnection(phone, clusterid) {
+        this.connections.set(phone, { clusterid: clusterid, local: clusterid == F.id });
+
+        let local = clusterid == F.id;
+        if (local)
+            EMIT2('connection-ws-new', { id: connection.id, clusterid: F.id, phone: phone });
+    }
+
+    async getconnection(phone) {
+        return this.connections.get(phone);
+    }
+
+    async setuplistenners() {
+        ON('connection-ws-new', function(data) {
+            this.setconnection(data.phone, data.clusterid);
+        });
+    }
+
+    async sendws(phone, data) {
+        return new Promise(function (resolve, require) {
+            let reqid =  UID();
+            let responses = 0;
+
+            let tm = setTimeout(function() {
+                resolve(false);
+            }, 30000);
+            const callback = function(response) {
+                if (response.reqid == reqid) {
+                    responses++;
+
+                    if (response.found) {
+                        clearTimeout(tm);
+                        resolve(response.response);
+                    }
+                }
+            }
+
+            ON('connection-ws-rx', callback);
+            EMIT2('connection-ws-tx', { reqid: reqid, data, phone });
+        });
+    }
+
+    async onws(payload) {
+        if (!payload.data || !payload.data.clusterid)
+            return;
+
+        let data = payload.data;
+        let reqid = payload.reqid;
+        let clusterid = data.clusterId;
+        let instance = MAIN.instances.get(payload.phone);
+
+        if (clusterid == F.id && instance) {
+                
+        }   
+    }
+}
+
+ON('ready', function() {
+    let hub = new ManagerHub();
+    hub.on('ready', function() {
+        U.ls(PATH.databases(), function (files, dirs) {
+            var arr = [];
+    
+            var index = 0;
+            for (var file of files) {
+                let name = file.split('databases')[1].substring(1);
+                let is = name.match(/^memorize_\d+\.json/);
+                if (is) {
+                    F.Fs.readFile(PATH.databases(name), (err, data) => {
+    
+                        if (err) {
+                            console.error("Error reading config file:", err);
+    
+                        } else {
+                            if (index < 5) {
+                                let parsed = JSON.parse(data);
+                                hub.emit('restore', parsed);
+                                index++;
+                            }
+                            console.log(`${name} read successfully.`);
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+
+
+})
+
+

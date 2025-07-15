@@ -2,44 +2,92 @@
 	"routes": [
 		{
 			"method": "POST",
+			"url": "/api/instances/pairing/",
+			"auth": 1
+		},
+		{
+			"method": "POST",
+			"url": "/api/instances/{phone}/pairing/refresh/",
+			"auth": 1,
+			"params": "phone:string"
+		},
+		{
+			"method": "POST",
+			"url": "/api/instances/",
+			"auth": 1
+		},
+		{
+			"method": "POST",
 			"url": "/api/config/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
 			"params": "phone:string"
 		},
 		{
 			"method": "POST",
 			"url": "/api/rpc/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
 			"params": "phone:string"
 		},
 		{
 			"method": "POST",
 			"url": "/api/send/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
 			"params": "phone:string"
 		},
 		{
 			"method": "POST",
 			"url": "/api/media/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "GET",
+			"url": "/api/cluster/health/",
+			"auth": 1
+		},
+		{
+			"method": "GET",
+			"url": "/api/cluster/instances/",
+			"auth": 1
+		},
+		{
+			"method": "DELETE",
+			"url": "/api/instances/{phone}/",
+			"auth": 1,
+			"params": "phone:string"
+		},
+		{
+			"method": "GET",
+			"url": "/api/health/global/",
+			"auth": 1
+		},
+		{
+			"method": "GET",
+			"url": "/api/health/local/",
+			"auth": 1
+		},
+		{
+			"method": "GET",
+			"url": "/api/instances/{phone}/pairing/",
+			"auth": 1,
 			"params": "phone:string"
 		},
 		{
 			"method": "GET",
 			"url": "/api/config/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
+			"params": "phone:string"
+		},
+		{
+			"method": "GET",
+			"url": "/api/instances/{phone}/",
+			"auth": 1,
 			"params": "phone:string"
 		},
 		{
 			"method": "SOCKET",
 			"url": "/api/ws/{phone}/",
 			"auth": 1,
-			"owner": "definition_service",
 			"params": "phone:string"
 		}
 	]
