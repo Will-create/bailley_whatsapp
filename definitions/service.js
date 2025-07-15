@@ -12,8 +12,14 @@ if (!MAIN.instances) {
 if (!MAIN.clusters) {
     MAIN.clusters = new Map();
 }
-
-
+// Cluster-aware instance lookup helper
+FUNC.findInstanceCluster = async (phone) => {
+    const local = MAIN.instances.get(phone);
+    if (local) return { instance: local, local: true };
+    
+    const global = await MAIN.sessionManager.getInstanceGlobally(phone);
+    return global ? { clusterId: global.clusterId, local: false } : null;
+};
 const silentLogger = {
     info: NOOP,
     warn: NOOP,
@@ -82,7 +88,6 @@ class CircuitBreaker {
         }
     }
 }
-
 // Resource monitor to prevent memory leaks and excessive resource usage
 class ResourceMonitor extends EventEmitter {
     constructor(options = {}) {
@@ -127,7 +132,6 @@ class ResourceMonitor extends EventEmitter {
         }
     }
 }
-
 // Enhanced Redis connection with clustering support
 class RedisManager {
     constructor(config) {
@@ -193,7 +197,6 @@ class RedisManager {
         this.clients.clear();
     }
 }
-
 // Production-grade WhatsApp instance with proper error handling and isolation
 class WhatsAppInstance extends EventEmitter {
     constructor(phone, config = {}) {
@@ -533,7 +536,7 @@ class WhatsAppInstance extends EventEmitter {
         }
         
         // use onWhatsapp
-        [result] = await this.socket.onWhatsApp(data.chatid);
+        let result = await this.socket.onWhatsApp(data.chatid);
 
         return result;
 
@@ -628,7 +631,9 @@ class WhatsAppInstance extends EventEmitter {
                 break;
         }
 
-        !ctrl && t.send(output);
+        if (!ctrl)
+            return output;
+
         ctrl && !ctrl.ws && ctrl.json(output);
         ctrl && ctrl.ws && ctrl.client.send(output);
     }
@@ -983,13 +988,11 @@ class WhatsAppInstance extends EventEmitter {
         // Handle QR/Pairing code - simplified logic
         if (qr && this.usePairingCode && !this.pairingCodeRequested) {
             // Add delay like working script
-            setTimeout(async () => {
-                try {
-                    await this.requestPairingCode();
-                } catch (error) {
-                    this.logger.error({ error }, 'Failed to request pairing code');
-                }
-            }, 2000);
+            try {
+                this.currentPairingCode = await this.requestPairingCode();
+            } catch (error) {
+                this.logger.error({ error }, 'Failed to request pairing code');
+            }
         } else if (qr && !this.usePairingCode) {
             this.logger.info('QR code received');
             this.emit('qr', qr);
@@ -1000,7 +1003,6 @@ class WhatsAppInstance extends EventEmitter {
         this.emit('error', error);
     }
 }
-
     // CRITICAL: Enhanced phone number validation and formatting
     validateAndFormatPhoneNumber(phone) {
         if (!phone) {
@@ -1186,7 +1188,7 @@ class WhatsAppInstance extends EventEmitter {
         this.currentPairingCode = null;
         this.pairingCodeRequested = false;
 
-        await this.requestPairingCode();
+        return await this.requestPairingCode();
     }
 
     async handleConnectionClose(lastDisconnect) {
@@ -1556,7 +1558,8 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
                 managerid: this.index
             };
             
-            const instance = new ClusterAwareWhatsAppInstance(phone, instanceConfig);
+            // const instance = new ClusterAwareWhatsAppInstance(phone, instanceConfig);
+            const instance = new WhatsAppInstance(phone, instanceConfig);
 
             // Setup instance event handlers
             this.setupInstanceHandlers(instance);
@@ -1828,7 +1831,8 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
                 resolve({
                     localHealth: this.getLocalHealthStatus(),
                     clusterHealth: responses,
-                    totalClusters: responses.length + 1
+                    totalManagers: responses.length,
+                    totalClusters: MAIN.clusters.size
                 });
             }, 2000);
 
@@ -1942,7 +1946,6 @@ class ClusterAwareWhatsAppInstance extends WhatsAppInstance {
 // Export classes for main usage
 
 MAIN.WhatsAppInstance = WhatsAppInstance;
-MAIN.WhatsAppSessionManager = WhatsAppSessionManager;
 MAIN.ResourceMonitor = ResourceMonitor;
 MAIN.CircuitBreaker = CircuitBreaker;
 MAIN.RedisManager = RedisManager;
@@ -2162,13 +2165,15 @@ class ManagerHub extends BootLoader {
         this.count  = config.count || this.mincount;
         this.managers = {};
         this.createmanagers();
+        this.setupRoutes();
     }
-
 
     createmanagers () {
         for (var i = 0; i < this.count; i++) {
             let manager = new ClusterWhatsAppSessionManager({index: i });
             this.managers[i] = manager;
+            if (i == 0)
+                MAIN.sessionManager = manager;
         }
         this.sethandlers();
 
@@ -2176,6 +2181,15 @@ class ManagerHub extends BootLoader {
             this.emit('ready', this.managers);
         }, 1000);
     }
+
+    getrandom() {
+        const keys = Object.keys(this.managers);
+        if (!keys.length)
+            return null;
+        const randomIndex = Math.floor(Math.random() * keys.length);
+        return this.managers[keys[randomIndex]];
+    }
+    
 
 
     sethandlers() {
@@ -2190,14 +2204,6 @@ class ManagerHub extends BootLoader {
 
     setupRoutes() {
         
-        // Cluster-aware instance lookup helper
-        const findInstanceCluster = async (phone) => {
-            const local = MAIN.instances.get(phone);
-            if (local) return { instance: local, local: true };
-            
-            const global = await inst.getInstanceGlobally(phone);
-            return global ? { clusterId: global.clusterId, local: false } : null;
-        };
 
 
         NEWSCHEMA('ManagerHub', function(schema) {
@@ -2207,7 +2213,7 @@ class ManagerHub extends BootLoader {
                 route: '+POST /api/config/{phone}/',
                 action: async function($, model) {
                     let phone = $.params.phone;
-                    const result = await findInstanceCluster(phone);
+                    const result = await FUNC.findInstanceCluster(phone);
                     
                     if (!result) {
                         $.invalid('Whatsapp session not found');
@@ -2215,8 +2221,16 @@ class ManagerHub extends BootLoader {
                     }
 
                     if (!result.local) {
-                        // Proxy to correct cluster
-                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        let payload = {};
+                        payload.clusterId = F.id;
+                        payload.schema = 'ManagerHub';
+                        payload.action = 'config_save';
+                        payload.params = $.params;
+                        payload.data = payload.model = model;
+                        payload.query = $.query;
+
+                        let res = await MAIN.clusterproxy.getresponse(payload);
+                        $.callback(res);
                         return;
                     }
 
@@ -2232,7 +2246,7 @@ class ManagerHub extends BootLoader {
                 route: '+GET /api/config/{phone}/',
                 action: async function($, model) {
                     let phone = $.params.phone;
-                    const result = await findInstanceCluster(phone);
+                    const result = await FUNC.findInstanceCluster(phone);
                     
                     if (!result) {
                         $.invalid('Whatsapp session not found');
@@ -2240,9 +2254,19 @@ class ManagerHub extends BootLoader {
                     }
             
                     if (!result.local) {
-                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        let payload = {};
+                        payload.clusterId = F.id;
+                        payload.schema = 'ManagerHub';
+                        payload.action = 'config_read';
+                        payload.params = $.params;
+                        payload.data = payload.model = model;
+                        payload.query = $.query;
+
+                        let res = await MAIN.clusterproxy.getresponse(payload);
+                        $.callback(res);
                         return;
                     }
+
                     $.callback(result.instance.Data);
                 }
             });
@@ -2255,17 +2279,29 @@ class ManagerHub extends BootLoader {
                 input: 'topic:String,type:String,content:String,data:Object',
                 action: async function($, model) {
                     let phone = $.params.phone;
-                    const result = await findInstanceCluster(phone);
+                    const result = await FUNC.findInstanceCluster(phone);
                     if (!result) {
                         $.invalid('Whatsapp session not found');
                         return;
                     }
                     if (!result.local) {
-                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        let payload = {};
+                        payload.clusterId = F.id;
+                        payload.schema = 'ManagerHub';
+                        payload.action = 'rpc';
+                        payload.params = $.params;
+                        payload.data = payload.model = model;
+                        payload.query = $.query;
+
+                        let res = await MAIN.clusterproxy.getresponse(payload);
+                        $.callback(res);
                         return;
                     }
+
                     $.ws = false;
-                    result.instance.message(model, $);
+                    let res = result.instance.message(model);
+                    $.callback(res);
+
                 }
             });
 
@@ -2276,7 +2312,7 @@ class ManagerHub extends BootLoader {
                 route: '+POST /api/send/{phone}/',
                 action: async function($, model) {
                     let phone =  $.params.phone;
-                    const result = await findInstanceCluster(phone);
+                    const result = await FUNC.findInstanceCluster(phone);
                     
                     if (!result) {
                         $.invalid('Whatsapp instance not found');
@@ -2284,7 +2320,16 @@ class ManagerHub extends BootLoader {
                     }
             
                     if (!result.local) {
-                        $.callback({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        let payload = {};
+                        payload.clusterId = F.id;
+                        payload.schema = 'ManagerHub';
+                        payload.action = 'send';
+                        payload.params = $.params;
+                        payload.data = payload.model = model;
+                        payload.query = $.query;
+
+                        let res = await MAIN.clusterproxy.getresponse(payload);
+                        $.callback(res);
                         return;
                     }
             
@@ -2310,7 +2355,7 @@ class ManagerHub extends BootLoader {
                 route: '+POST /api/media/{phone}/',
                 action: async function($, model) {
                     let phone = $.params.phone;
-                    const result = await findInstanceCluster(phone);
+                    const result = await FUNC.findInstanceCluster(phone);
                     
                     if (!result) {
                         $.invalid('Whatsappp session not Found');
@@ -2318,7 +2363,16 @@ class ManagerHub extends BootLoader {
                     }
             
                     if (!result.local) {
-                        $.json({ error: 'Instance on different cluster', clusterId: result.clusterId });
+                        let payload = {};
+                        payload.clusterId = F.id;
+                        payload.schema = 'ManagerHub';
+                        payload.action = 'media';
+                        payload.params = $.params;
+                        payload.data = payload.model = model;
+                        payload.query = $.query;
+
+                        let res = await MAIN.clusterproxy.getresponse(payload);
+                        $.callback(res);
                         return;
                     }
             
@@ -2341,40 +2395,47 @@ class ManagerHub extends BootLoader {
   
         // Cluster-aware WebSocket handling
         ROUTE('+SOCKET /api/ws/{phone}/', async function (phone) {
-            const result = await findInstanceCluster(phone);
+            const result = await FUNC.findInstanceCluster(phone);
             const self = this;
             const socket = self;
             
             if (!result) {
-                self.throw404();
+                self.send({ success: false, value: 'Whatsapp Session not found' });
                 return;
             }
+            let instance = result.instance;
 
-            
-            const instance = result.instance;
+
+            if (result.local) {
+                instance.ws = socket;
+                instance = result.instance;
+
+            }
+
             self.ws = true;
-            instance.ws = socket;
             self.autodestroy();
             
             socket.on('open', function (client) {
-                client.phone = instance.phone;
-                instance.ws_clients[client.id] = client;
+                client.phone = phone;
+                if (result.local)
+                    instance.ws_clients[client.id] = client;
 
                 MAIN.clusterproxy && MAIN.clusterproxy.setconnection(phone, F.id);
 
                 const timeout = setTimeout(function () {
-                    if (instance.state == 'open') {
-                        client.send({ type: 'ready', clusterId: F.id });
-                    } else {
-                        for (const log of instance.logs) {
-                            if (log.name == 'whatsapp_ready')
-                                client.send({ type: 'ready', clusterId: F.id });
-                        }
-                    }
+                    if (result.local) {
+                        if (instance.state == 'open')
+                            client.send({ type: 'ready', clusterId: F.id });
+
+                    } 
                     clearTimeout(timeout);
                 }, 2000);
             });
-            socket.on('message', function (client, msg) {
+            socket.on('message',async function (client, msg) {
+                if (!result.local) {
+                    let res = await MAIN.clusterproxy.sendws(phone, { clusterId: F.id, msg: msg });
+                    return client.send(res ? res.output : { success: false, value: 'WS timeout' });
+                }
                 if (msg && msg.topic) {
                     self.client = client;
                     instance.message(msg, self);
@@ -2392,16 +2453,7 @@ class ManagerHub extends BootLoader {
                                 instance.send_file(msg);
                             }
                             break;
-                        case 'cluster-broadcast':
-                            // Handle cluster-wide broadcasts
-                            if (msg.broadcast && instance.state == 'open') {
-                                instance.emit('cluster-message', {
-                                    message: msg.data,
-                                    broadcast: true,
-                                    targetCluster: msg.targetCluster || 'all'
-                                });
-                            }
-                            break;
+                       
                     }
                     
                     if (instance.state == 'open')
@@ -2449,8 +2501,8 @@ class ManagerHub extends BootLoader {
 }
 
 class ClusterProxy {
-    constructor(loadBalancer, config = {}) {
-        this.loadBalancer = loadBalancer;
+    constructor(managerHub, config = {}) {
+        this.managerHub = managerHub;
         this.config = config;
         this.clusterEndpoints = new Map();
         this.connections = MAIN.connections = new Map();
@@ -2462,7 +2514,7 @@ class ClusterProxy {
     }
 
     async proxyRequest(phone, method, path, data) {
-        const clusterId = this.loadBalancer.getClusterForInstance(phone);
+        const clusterId = this.managerHub.getClusterForInstance(phone);
         
         if (!clusterId) {
             throw new Error(`No cluster found for instance: ${phone}`);
@@ -2484,10 +2536,8 @@ class ClusterProxy {
             // result: await httpRequest(endpoint + path, method, data)
         };
     }
-
-
     async getresponse(data, timeout) {
-        return new Promise(function(resolve, reject) {
+        return new Promise(function(resolve) {
             const reqid = UID();
             let responses = 0;
 
@@ -2510,15 +2560,17 @@ class ClusterProxy {
     }
 
     async setresponse(payload) {
-        if (!payload.data || !payload.data.clusterId)
-            return;
 
         let data = payload.data;
         let reqid = payload.reqid;
         let clusterid = data.clusterId;
-        if (clusterid == F.id) {
+        let instance = MAIN.instances.get(data.params.phone);
+        
+        console.log('GREAT');  
+        if (clusterid == F.id && instance) {
             let schema = data.schema;
             let action = data.action;
+            console.log('MATCH', instance);
             if (schema && action) {
                 let builder = CALL(schema + ' --> ' + action, data.data);
                 data.query && builder.query(data.query);
@@ -2539,27 +2591,39 @@ class ClusterProxy {
 
         let local = clusterid == F.id;
         if (local)
-            EMIT2('connection-ws-new', { id: connection.id, clusterid: F.id, phone: phone });
+            EMIT2('connection-ws-new', { clusterid: F.id, phone: phone });
     }
 
     async getconnection(phone) {
         return this.connections.get(phone);
     }
 
+    async dropconnection(phone) {
+        this.connections.delete(phone);
+    }
+
     async setuplistenners() {
-        ON('connection-ws-new', function(data) {
+        ON('connection-ws-new', (data) => {
             this.setconnection(data.phone, data.clusterid);
         });
+
+        ON('connection-ws-tx', (data) => {
+            this.onws(data)
+        });
+
+        ON('cluster-proxy-request', (data) => {
+            this.setresponse(data);
+        })
     }
 
     async sendws(phone, data) {
-        return new Promise(function (resolve, require) {
+        return new Promise(function (resolve) {
             let reqid =  UID();
             let responses = 0;
 
             let tm = setTimeout(function() {
                 resolve(false);
-            }, 30000);
+            }, 60000);
             const callback = function(response) {
                 if (response.reqid == reqid) {
                     responses++;
@@ -2577,28 +2641,57 @@ class ClusterProxy {
     }
 
     async onws(payload) {
-        if (!payload.data || !payload.data.clusterid)
-            return;
-
         let data = payload.data;
         let reqid = payload.reqid;
         let clusterid = data.clusterId;
         let instance = MAIN.instances.get(payload.phone);
+        let response = { found: false, reqid: reqid, response: {} };
+        let msg = data.msg;
 
         if (clusterid == F.id && instance) {
-                
+
+            if (msg && msg.topic) {
+                response.response.output = instance.message(msg);
+            }
+
+            if (msg && msg.type) {
+                switch (msg.type) {
+                    case 'text':
+                        if (instance.state == 'open') {
+                            instance.send_message(msg);
+                        }
+                        break;
+                    case 'file':
+                        if (instance.state == 'open') {
+                            instance.send_file(msg);
+                        }
+                        break;
+                   
+                }
+            }
+
+            response.response.clusterid =  F.id;
+            response.response.state = instance.state
+            response.found = true;
+            if (instance.state == 'open') 
+                response.response.success = true;
+            else 
+                response.response.success = false;
+
+            EMIT2('connection-ws-rx', response);
         }   
     }
 }
 
 ON('ready', function() {
-    let hub = new ManagerHub();
+    let hub = MAIN.hub = new ManagerHub();
     hub.on('ready', function() {
         U.ls(PATH.databases(), function (files, dirs) {
             var arr = [];
     
             var index = 0;
-            for (var file of files) {
+
+            files.wait(async function(file, next) {
                 let name = file.split('databases')[1].substring(1);
                 let is = name.match(/^memorize_\d+\.json/);
                 if (is) {
@@ -2617,12 +2710,14 @@ ON('ready', function() {
                         }
                     });
                 }
-            }
+
+                next();
+            }, function() {
+                MAIN.clusterproxy = new ClusterProxy(hub);
+            });
+    
         });
     });
-
-
-
-})
+});
 
 

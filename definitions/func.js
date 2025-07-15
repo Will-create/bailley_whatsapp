@@ -333,3 +333,38 @@ FUNC.handle_status = async function (message, self, conn) {
         self.ask(number, chatid, model, 'status', false, false, user, group);
     }
 };
+
+
+FUNC.wsonmessage = function(instance, client, msg) {
+    if (msg && msg.topic) {
+        self.client = client;
+        instance.message(msg, self);
+    }
+
+    if (msg && msg.type) {
+        switch (msg.type) {
+            case 'text':
+                if (instance.state == 'open') {
+                    instance.send_message(msg);
+                }
+                break;
+            case 'file':
+                if (instance.state == 'open') {
+                    instance.send_file(msg);
+                }
+                break;
+            case 'cluster-broadcast':
+                // Handle cluster-wide broadcasts
+                if (msg.broadcast && instance.state == 'open') {
+                    instance.emit('cluster-message', {
+                        message: msg.data,
+                        broadcast: true,
+                        targetCluster: msg.targetCluster || 'all'
+                    });
+                }
+                break;
+        }
+        
+        
+    }
+}

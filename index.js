@@ -1,5 +1,5 @@
 
-let sock = require('path').join(require('os').tmpdir(), 'baileys130');
+let sock = require('path').join(require('os').tmpdir(), 'baileys134');
 console.log(sock);
 // Configure cluster options
 const clusterOptions = {
@@ -23,5 +23,5 @@ const clusterOptions = {
 };
 // Different initialization based on cluster mode
         // Single instance mode (for development)
-require('total4/debug')(clusterOptions);
+require('total4/release')(clusterOptions);
 
