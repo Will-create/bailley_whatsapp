@@ -1,12 +1,35 @@
-const { makeWASocket, useMultiFileAuthState, Browsers, getContentType, DisconnectReason } = require('baileys');
+const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,    
+ DisconnectReason } = require('baileys');
 const { RedisStore } = require('baileys-redis-store');
 const { createClient } = require('redis');
 const pino = require('pino');
 const EventEmitter = require('events');
 const os = require('os');
 
+let client = createClient({ url: CONF.redisUrl });
+
+client.on('error', (err) => {
+    console.error(`Redis error for ${F.id}:`, err);
+});
+
+client.on('reconnecting', () => {
+    console.log(`Redis reconnecting for ${F.id}`);
+});
+
+if  (!MAIN.redis)
+    MAIN.redis = client;
+
+MAIN.redis.connect();
+
+// In-memory ACK listener registry to avoid duplicate hooks
+const ACK_LISTENERS = new Map();
+
 if (!MAIN.instances) {
     MAIN.instances = new Map();
+}
+
+if (!MAIN.wsclients) {
+    MAIN.wsclients = new Map();
 }
 
 if (!MAIN.clusters) {
@@ -15,16 +38,17 @@ if (!MAIN.clusters) {
 // Cluster-aware instance lookup helper
 FUNC.findInstanceCluster = async (phone) => {
     const local = MAIN.instances.get(phone);
-    if (local) return { instance: local, local: true };
-    
+    if (local) return { instance: local, local: true, clusterId: F.id };
+
     const global = await MAIN.sessionManager.getInstanceGlobally(phone);
     return global ? { clusterId: global.clusterId, local: false } : null;
 };
+
 const silentLogger = {
     info: NOOP,
     warn: NOOP,
     error: NOOP,
-    trace: NOOP ,
+    trace: NOOP,
     debug: console.log,
     child: () => silentLogger
 };
@@ -249,7 +273,7 @@ class WhatsAppInstance extends EventEmitter {
         t.db = DB();
         let filename = PATH.databases('memorize_' + phone + '.json');
         // check if memorize file exists, if not create it
-        if (!Total.Fs.existsSync(filename)) { 
+        if (!Total.Fs.existsSync(filename)) {
             Total.Fs.writeFileSync(filename, JSON.stringify(FUNC.getFormattedData(phone, CONF.baseurl, config.managerid), null, 2));
         }
 
@@ -283,14 +307,14 @@ class WhatsAppInstance extends EventEmitter {
         t.monthly_count = 0;
         t.daily_count = 0;
         t.service = setInterval(function () {
-                t.tick2++;
-                if (t.tick2 >= t.tick_interval) {
-                    t.tick2 = 0;
-                    t.tick++;
-                    t.onservice && t.onservice(t.tick);
-                }
-            }, 1000);
-        }
+            t.tick2++;
+            if (t.tick2 >= t.tick_interval) {
+                t.tick2 = 0;
+                t.tick++;
+                t.onservice && t.onservice(t.tick);
+            }
+        }, 1000);
+    }
 
     setupEventHandlers() {
         this.resourceMonitor.on('memory-warning', (usage) => {
@@ -349,7 +373,7 @@ class WhatsAppInstance extends EventEmitter {
 
     wait(ms, reason) {
         let t = this;
-    // publish event
+        // publish event
         t.PUB('wait', { content: { value: ms, reason: reason || 'wait' } });
         return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -375,7 +399,7 @@ class WhatsAppInstance extends EventEmitter {
             var message = {};
             message.id = msg.key.id;
             message.chatid = chat.id;
-            
+
             const messageType = Object.keys(msg.message || {})[0] || 'unknown';
             message.type = messageType;
             message.value = msg.message?.[messageType]?.text || msg.message?.[messageType]?.caption || '';
@@ -384,7 +408,7 @@ class WhatsAppInstance extends EventEmitter {
             message.dtcreated = NOW;
             message.kind = isDeleted ? 'deleted' : 'received';
             message.isgroup = msg.key.remoteJid.indexOf('@g.us') !== -1;
-            
+
             await t.db.insert('db2/tbl_message', message).promise();
             await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
         } catch (err) {
@@ -392,7 +416,7 @@ class WhatsAppInstance extends EventEmitter {
         }
     }
     PUB(topic, obj, broker) {
-         var t = this;
+        var t = this;
         obj.env = t.Worker.data;
         obj.topic = topic;
         console.log('PUB: ' + topic, obj.content);
@@ -481,7 +505,7 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async refresh_limits() {
-      let t = this;
+        let t = this;
         try {
             if (t.plan && t.monthly_count >= t.plan.maxlimit) {
                 t.is_maxlimit = true;
@@ -498,7 +522,7 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async ask(number, chatid, content, type, isgroup, istag, user, group) {
-         var t = this;
+        var t = this;
         const obj = {
             content: content,
             number: number,
@@ -534,7 +558,7 @@ class WhatsAppInstance extends EventEmitter {
         if (!data.chatid.includes('@')) {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
         }
-        
+
         // use onWhatsapp
         let result = await this.socket.onWhatsApp(data.chatid);
 
@@ -548,11 +572,11 @@ class WhatsAppInstance extends EventEmitter {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
         }
 
-        
+
         let filename;
-        
+
         const caption = data.caption || '';
-        let mimetype = 'application/octet-stream'; 
+        let mimetype = 'application/octet-stream';
         let buffer;
 
         if (data.type === 'url') {
@@ -560,10 +584,10 @@ class WhatsAppInstance extends EventEmitter {
             let fs = F.Fs;
             data.ext = U.getExtension(data.url);
             filename = `file_${Date.now()}.` + (data.ext || '');
-            
+
             mimetype = U.getContentType(filename);
             await new Promise((resolve, reject) => {
-                DOWNLOAD(data.url, PATH.temp(filename), function(err, response) {
+                DOWNLOAD(data.url, PATH.temp(filename), function (err, response) {
                     if (err) return reject(err);
                     buffer = fs.readFileSync(PATH.temp(filename));
                     fs.unlinkSync(PATH.temp(filename)); // clean up
@@ -614,7 +638,7 @@ class WhatsAppInstance extends EventEmitter {
                 output.content = t.logs;
                 break;
             case 'onwhatsapp':
-                if (t.state == 'open') 
+                if (t.state == 'open')
                     output.content = await t.onwhatsapp(msg);
                 else
                     output.success = false;
@@ -653,7 +677,7 @@ class WhatsAppInstance extends EventEmitter {
 
     onservice(tick) {
         var t = this;
-    // we check some metrics about the remote browser cl.baseurl + 'metrics/total' + cl.token
+        // we check some metrics about the remote browser cl.baseurl + 'metrics/total' + cl.token
         t.Worker = MEMORIZE(t.phone);
 
         if (tick % 30 == 0) {
@@ -669,11 +693,11 @@ class WhatsAppInstance extends EventEmitter {
         t.refresh_limits();
     }
 
-    async init () {
+    async init() {
         let t = this;
         try {
             var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
-            
+
             if (!number) {
                 number = {};
                 number.id = UID();
@@ -705,7 +729,7 @@ class WhatsAppInstance extends EventEmitter {
                     console.error('Error restarting instance:', err);
                 }
             };
-            
+
             t.restartInstance = async function () {
                 try {
                     t.pairingCodeRequested = false;
@@ -720,7 +744,7 @@ class WhatsAppInstance extends EventEmitter {
                 console.log('Initializing whatsapp: ' + t.id);
                 t.logs.push({ name: 'instance_initializing', content: 'ID:' + t.id });
             }, 500);
-            
+
         } catch (err) {
             console.error('Error initializing instance:', err);
             t.logs.push({ name: 'instance_error', content: err.message });
@@ -729,11 +753,11 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     die() {
-         var t = this;
-    if (t.service) {
-        clearInterval(t.service);
-    }
-   
+        var t = this;
+        if (t.service) {
+            clearInterval(t.service);
+        }
+
     }
 
     get_code() {
@@ -786,7 +810,7 @@ class WhatsAppInstance extends EventEmitter {
                 chat.dtcreated = NOW;
                 await t.db.insert('db2/tbl_chat', chat).promise();
             }
-            
+
             var message = {};
             message.id = UID();
             message.chatid = chat.id;
@@ -798,7 +822,7 @@ class WhatsAppInstance extends EventEmitter {
             message.kind = content.type == 'edited' ? 'edited' : 'revoked';
             await t.db.insert('db2/tbl_message', message).promise();
             await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
-            
+
             // send push notification
             var obj = {};
             obj.topic = 'revoked-' + t.phone;
@@ -830,7 +854,7 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     memory_refresh(body, callback) {
-         var t = this;
+        var t = this;
 
         if (body) {
             for (var key in body)
@@ -887,47 +911,47 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async createSocket() {
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error('Socket creation timeout'));
-        }, this.connectionTimeout);
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error('Socket creation timeout'));
+            }, this.connectionTimeout);
 
-        try {
-            // Simplified socket configuration that works
-            const socketConfig = {
-                auth: this.authState.state,
-                browser: ['Mac OS', 'Chrome', '119.0.0.0'], // Use working browser config
-                logger: this.logger.child({ component: 'socket' }),
-                printQRInTerminal: false,
-                markOnlineOnConnect: true, // Changed to true like working script
-                
-                // Remove problematic options that cause issues
-                // generateHighQualityLinkPreview: false,
-                // syncFullHistory: false,
-                // retryRequestDelayMs: 1000,
-                // maxMsgRetryCount: 3,
-                // connectTimeoutMs: 120000,
-                // defaultQueryTimeoutMs: 120000,
-                // keepAliveIntervalMs: 25000,
-                // shouldIgnoreJid: () => false,
-                // shouldSyncHistoryMessage: () => false,
-                // transactionOpts: {
-                //     maxCommitRetries: 5,
-                //     delayBetweenTriesMs: 2000
-                // }
-            };
+            try {
+                // Simplified socket configuration that works
+                const socketConfig = {
+                    auth: this.authState.state,
+                    browser: ['Mac OS', 'Chrome', '119.0.0.0'], // Use working browser config
+                    logger: this.logger.child({ component: 'socket' }),
+                    printQRInTerminal: false,
+                    markOnlineOnConnect: true, // Changed to true like working script
 
-            this.socket = makeWASocket(socketConfig);
-            this.setupSocketHandlers();
+                    // Remove problematic options that cause issues
+                    // generateHighQualityLinkPreview: false,
+                    // syncFullHistory: false,
+                    // retryRequestDelayMs: 1000,
+                    // maxMsgRetryCount: 3,
+                    // connectTimeoutMs: 120000,
+                    // defaultQueryTimeoutMs: 120000,
+                    // keepAliveIntervalMs: 25000,
+                    // shouldIgnoreJid: () => false,
+                    // shouldSyncHistoryMessage: () => false,
+                    // transactionOpts: {
+                    //     maxCommitRetries: 5,
+                    //     delayBetweenTriesMs: 2000
+                    // }
+                };
 
-            clearTimeout(timeout);
-            resolve();
-        } catch (error) {
-            clearTimeout(timeout);
-            reject(error);
-        }
-    });
-}
+                this.socket = makeWASocket(socketConfig);
+                this.setupSocketHandlers();
+
+                clearTimeout(timeout);
+                resolve();
+            } catch (error) {
+                clearTimeout(timeout);
+                reject(error);
+            }
+        });
+    }
 
 
     setupSocketHandlers() {
@@ -955,54 +979,54 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async handleConnectionUpdate(update) {
-    const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr } = update;
 
-    try {
-        this.state = connection || 'UNKNOWN';
-        this.lastHeartbeat = Date.now();
+        try {
+            this.state = connection || 'UNKNOWN';
+            this.lastHeartbeat = Date.now();
 
-        this.logger.info({
-            connection,
-            state: this.state,
-            hasQr: !!qr,
-            usePairingCode: this.usePairingCode,
-            pairingCodeRequested: this.pairingCodeRequested,
-            isRegistered: !!this.authState.state.creds?.registered
-        }, 'Connection update');
+            this.logger.info({
+                connection,
+                state: this.state,
+                hasQr: !!qr,
+                usePairingCode: this.usePairingCode,
+                pairingCodeRequested: this.pairingCodeRequested,
+                isRegistered: !!this.authState.state.creds?.registered
+            }, 'Connection update');
 
-        if (connection === 'open') {
-            this.reconnectAttempts = 0;
-            this.pairingAttempts = 0;
-            this.pairingCodeRequested = false;
-            this.clearPairingCodeTimer();
-            this.logger.info('WhatsApp connection established');
-            this.emit('ready');
+            if (connection === 'open') {
+                this.reconnectAttempts = 0;
+                this.pairingAttempts = 0;
+                this.pairingCodeRequested = false;
+                this.clearPairingCodeTimer();
+                this.logger.info('WhatsApp connection established');
+                this.emit('ready');
 
-        } else if (connection === 'close') {
-            await this.handleConnectionClose(lastDisconnect);
+            } else if (connection === 'close') {
+                await this.handleConnectionClose(lastDisconnect);
 
-        } else if (connection === 'connecting') {
-            this.logger.info('Connecting to WhatsApp...');
-        }
-
-        // Handle QR/Pairing code - simplified logic
-        if (qr && this.usePairingCode && !this.pairingCodeRequested) {
-            // Add delay like working script
-            try {
-                this.currentPairingCode = await this.requestPairingCode();
-            } catch (error) {
-                this.logger.error({ error }, 'Failed to request pairing code');
+            } else if (connection === 'connecting') {
+                this.logger.info('Connecting to WhatsApp...');
             }
-        } else if (qr && !this.usePairingCode) {
-            this.logger.info('QR code received');
-            this.emit('qr', qr);
-        }
 
-    } catch (error) {
-        this.logger.error({ error }, 'Error handling connection update');
-        this.emit('error', error);
+            // Handle QR/Pairing code - simplified logic
+            if (qr && this.usePairingCode && !this.pairingCodeRequested) {
+                // Add delay like working script
+                try {
+                    this.currentPairingCode = await this.requestPairingCode();
+                } catch (error) {
+                    this.logger.error({ error }, 'Failed to request pairing code');
+                }
+            } else if (qr && !this.usePairingCode) {
+                this.logger.info('QR code received');
+                this.emit('qr', qr);
+            }
+
+        } catch (error) {
+            this.logger.error({ error }, 'Error handling connection update');
+            this.emit('error', error);
+        }
     }
-}
     // CRITICAL: Enhanced phone number validation and formatting
     validateAndFormatPhoneNumber(phone) {
         if (!phone) {
@@ -1040,124 +1064,123 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async requestPairingCode() {
-    try {
-        if (!this.socket) {
-            throw new Error('Socket not available for pairing code request');
-        }
-
-        if (this.pairingCodeRequested) {
-            this.logger.warn('Pairing code already requested, skipping');
-            return;
-        }
-
-        if (this.pairingAttempts >= this.maxPairingAttempts) {
-            throw new Error(`Maximum pairing attempts (${this.maxPairingAttempts}) exceeded`);
-        }
-
-        // Check if already registered (like working script)
-        if (this.authState?.state?.creds?.registered) {
-            throw new Error('This instance is already registered. No pairing code can be generated.');
-        }
-
-        const sanitizedPhone = this.validateAndFormatPhoneNumber(this.phone);
-
-        this.logger.info({
-            phone: sanitizedPhone,
-            originalPhone: this.phone,
-            attempt: this.pairingAttempts + 1
-        }, 'Requesting pairing code');
-
-        this.clearPairingCodeTimer();
-        this.pairingCodeRequested = true;
-        this.pairingAttempts++;
-
-        // Add delay like working script (10 seconds)
-        this.logger.info('Waiting 10 seconds before requesting pairing code...');
-        await new Promise(resolve => setTimeout(resolve, 10000));
-
-        let pairingCode;
         try {
-            pairingCode = await this.socket.requestPairingCode(sanitizedPhone);
+            if (!this.socket) {
+                throw new Error('Socket not available for pairing code request');
+            }
+
+            if (this.pairingCodeRequested) {
+                this.logger.warn('Pairing code already requested, skipping');
+                return;
+            }
+
+            if (this.pairingAttempts >= this.maxPairingAttempts) {
+                throw new Error(`Maximum pairing attempts (${this.maxPairingAttempts}) exceeded`);
+            }
+
+            // Check if already registered (like working script)
+            if (this.authState?.state?.creds?.registered) {
+                throw new Error('This instance is already registered. No pairing code can be generated.');
+            }
+
+            const sanitizedPhone = this.validateAndFormatPhoneNumber(this.phone);
+
+            this.logger.info({
+                phone: sanitizedPhone,
+                originalPhone: this.phone,
+                attempt: this.pairingAttempts + 1
+            }, 'Requesting pairing code');
+
+            this.clearPairingCodeTimer();
+            this.pairingCodeRequested = true;
+            this.pairingAttempts++;
+
+            // Add delay like working script (10 seconds)
+            this.logger.info('Waiting 10 seconds before requesting pairing code...');
+            await new Promise(resolve => setTimeout(resolve, 10000));
+
+            let pairingCode;
+            try {
+                pairingCode = await this.socket.requestPairingCode(sanitizedPhone);
+            } catch (error) {
+                this.pairingCodeRequested = false;
+                this.logger.error({
+                    error: error.message,
+                    phone: sanitizedPhone,
+                    socketState: this.socket?.readyState
+                }, 'Pairing code request failed');
+
+                if (error.message.includes('bad-request') || error.message.includes('400')) {
+                    throw new Error(`Invalid phone number format: ${sanitizedPhone}. Please verify the number is correct and includes country code.`);
+                }
+                throw error;
+            }
+
+            if (!pairingCode) {
+                this.pairingCodeRequested = false;
+                throw new Error('Failed to generate pairing code - empty response');
+            }
+
+            this.currentPairingCode = pairingCode;
+
+            // Format like working script
+            const formattedCode = pairingCode.length === 8 ?
+                pairingCode.slice(0, 4) + '-' + pairingCode.slice(4) :
+                pairingCode;
+
+            this.logger.info({
+                pairingCode: formattedCode,
+                phone: this.phone,
+                sanitizedPhone,
+                attempt: this.pairingAttempts,
+                instructions: 'Enter this code in WhatsApp > Linked Devices > Link a Device'
+            }, 'Pairing code generated successfully');
+
+            // Emit pairing code event
+            this.emit('pairing-code', {
+                phone: this.phone,
+                sanitizedPhone,
+                code: formattedCode,
+                rawCode: pairingCode,
+                attempt: this.pairingAttempts,
+                instructions: 'Open WhatsApp → Settings → Linked Devices → Link a Device → Enter this code'
+            });
+
+            // Set timer (2 minutes like original, but could be longer)
+            this.pairingCodeTimer = setTimeout(() => {
+                this.logger.warn({
+                    phone: this.phone,
+                    code: formattedCode,
+                    attempt: this.pairingAttempts
+                }, 'Pairing code expired');
+
+                this.currentPairingCode = null;
+                this.pairingCodeRequested = false;
+
+                this.emit('pairing-code-expired', {
+                    phone: this.phone,
+                    code: formattedCode,
+                    attempt: this.pairingAttempts
+                });
+
+            }, this.pairingCodeTimeout);
+
         } catch (error) {
             this.pairingCodeRequested = false;
             this.logger.error({
                 error: error.message,
-                phone: sanitizedPhone,
-                socketState: this.socket?.readyState
-            }, 'Pairing code request failed');
-
-            if (error.message.includes('bad-request') || error.message.includes('400')) {
-                throw new Error(`Invalid phone number format: ${sanitizedPhone}. Please verify the number is correct and includes country code.`);
-            }
-            throw error;
-        }
-
-        if (!pairingCode) {
-            this.pairingCodeRequested = false;
-            throw new Error('Failed to generate pairing code - empty response');
-        }
-
-        this.currentPairingCode = pairingCode;
-
-        // Format like working script
-        const formattedCode = pairingCode.length === 8 ? 
-            pairingCode.slice(0, 4) + '-' + pairingCode.slice(4) : 
-            pairingCode;
-
-        this.logger.info({
-            pairingCode: formattedCode,
-            phone: this.phone,
-            sanitizedPhone,
-            attempt: this.pairingAttempts,
-            instructions: 'Enter this code in WhatsApp > Linked Devices > Link a Device'
-        }, 'Pairing code generated successfully');
-
-        // Emit pairing code event
-        this.emit('pairing-code', {
-            phone: this.phone,
-            sanitizedPhone,
-            code: formattedCode,
-            rawCode: pairingCode,
-            attempt: this.pairingAttempts,
-            instructions: 'Open WhatsApp → Settings → Linked Devices → Link a Device → Enter this code'
-        });
-
-        // Set timer (2 minutes like original, but could be longer)
-        this.pairingCodeTimer = setTimeout(() => {
-            this.logger.warn({
                 phone: this.phone,
-                code: formattedCode,
                 attempt: this.pairingAttempts
-            }, 'Pairing code expired');
+            }, 'Failed to request pairing code');
 
-            this.currentPairingCode = null;
-            this.pairingCodeRequested = false;
-
-            this.emit('pairing-code-expired', {
+            this.emit('pairing-code-error', {
                 phone: this.phone,
-                code: formattedCode,
+                error: error.message,
                 attempt: this.pairingAttempts
             });
-
-        }, this.pairingCodeTimeout);
-
-    } catch (error) {
-        this.pairingCodeRequested = false;
-        this.logger.error({
-            error: error.message,
-            phone: this.phone,
-            attempt: this.pairingAttempts
-        }, 'Failed to request pairing code');
-
-        this.emit('pairing-code-error', {
-            phone: this.phone,
-            error: error.message,
-            attempt: this.pairingAttempts
-        });
-        throw error;
+            throw error;
+        }
     }
-}
-
 
     clearPairingCodeTimer() {
         if (this.pairingCodeTimer) {
@@ -1192,72 +1215,72 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async handleConnectionClose(lastDisconnect) {
-    const reason = lastDisconnect?.error?.output?.statusCode;
-    const shouldReconnect = reason !== DisconnectReason.loggedOut;
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = reason !== DisconnectReason.loggedOut;
 
-    // Clear pairing code on certain errors
-    if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403) {
-        this.clearPairingCodeTimer();
-        this.currentPairingCode = null;
-        this.pairingCodeRequested = false;
-        this.pairingAttempts = 0;
+        // Clear pairing code on certain errors
+        if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403) {
+            this.clearPairingCodeTimer();
+            this.currentPairingCode = null;
+            this.pairingCodeRequested = false;
+            this.pairingAttempts = 0;
+        }
+
+        this.logger.warn({
+            reason,
+            shouldReconnect,
+            isPairingActive: this.isPairingCodeActive(),
+            pairingAttempts: this.pairingAttempts
+        }, 'Connection closed');
+
+        if (reason === DisconnectReason.loggedOut) {
+            this.logger.info('Device logged out');
+            this.emit('logged-out');
+            return;
+        }
+
+        // Special handling for code 515 (blocked session)
+        if (reason === 515) {
+            this.reconnectAttempts++;
+
+            this.logger.info({
+                attempt: this.reconnectAttempts,
+                delay: 5000 // Fixed 5 second delay like working script
+            }, 'Attempting reconnection');
+
+            setTimeout(async () => {
+                try {
+                    await this.createSocket();
+                } catch (error) {
+                    this.logger.error({ error }, 'Reconnection failed');
+                    this.emit('error', error);
+                }
+            }, 5000);
+            return
+        }
+
+        // Simple reconnection logic like working script
+        if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts && !this.isShuttingDown) {
+            this.reconnectAttempts++;
+
+            this.logger.info({
+                attempt: this.reconnectAttempts,
+                delay: 5000 // Fixed 5 second delay like working script
+            }, 'Attempting reconnection');
+
+            setTimeout(async () => {
+                try {
+                    await this.createSocket();
+                } catch (error) {
+                    this.logger.error({ error }, 'Reconnection failed');
+                    this.emit('error', error);
+                }
+            }, 5000);
+        } else {
+            this.logger.error('Max reconnection attempts reached or shutting down');
+            this.emit('max-reconnect-attempts');
+        }
     }
-
-    this.logger.warn({
-        reason,
-        shouldReconnect,
-        isPairingActive: this.isPairingCodeActive(),
-        pairingAttempts: this.pairingAttempts
-    }, 'Connection closed');
-
-    if (reason === DisconnectReason.loggedOut) {
-        this.logger.info('Device logged out');
-        this.emit('logged-out');
-        return;
-    }
-
-    // Special handling for code 515 (blocked session)
-    if (reason === 515) {
-        this.reconnectAttempts++;
-        
-        this.logger.info({
-            attempt: this.reconnectAttempts,
-            delay: 5000 // Fixed 5 second delay like working script
-        }, 'Attempting reconnection');
-
-        setTimeout(async () => {
-            try {
-                await this.createSocket();
-            } catch (error) {
-                this.logger.error({ error }, 'Reconnection failed');
-                this.emit('error', error);
-            }
-        }, 5000);
-        return
-    }
-
-    // Simple reconnection logic like working script
-    if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts && !this.isShuttingDown) {
-        this.reconnectAttempts++;
-        
-        this.logger.info({
-            attempt: this.reconnectAttempts,
-            delay: 5000 // Fixed 5 second delay like working script
-        }, 'Attempting reconnection');
-
-        setTimeout(async () => {
-            try {
-                await this.createSocket();
-            } catch (error) {
-                this.logger.error({ error }, 'Reconnection failed');
-                this.emit('error', error);
-            }
-        }, 5000);
-    } else {
-        this.logger.error('Max reconnection attempts reached or shutting down');
-        this.emit('max-reconnect-attempts');
-    }
-}
     async handleMessages(messageUpdate) {
         if (!messageUpdate || messageUpdate.type !== 'notify') return;
 
@@ -1470,11 +1493,11 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
         this.maxInstances = config.maxInstances || 1000;
         this.instancesPerWorker = config.instancesPerWorker || 100;
         this.clusterId = F.id;
-        
+
         // Cluster-specific configurations
         this.maxInstancesPerCluster = Math.floor(this.maxInstances / (config.expectedClusters || 4));
         this.clusterInstanceMap = MAIN.clusters; // Track which cluster has which instances
-        
+
         // Health monitoring
         this.healthCheckInterval = config.healthCheckInterval || 30000;
         this.startHealthMonitoring();
@@ -1488,17 +1511,14 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
     setupClusterHandlers() {
         // Listen for cluster-wide events
         ON('cluster-instance-created', (data) => {
-            if (data.clusterId !== this.clusterId) {
-                this.clusterInstanceMap.set(data.phone, data.clusterId);
-                this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance created');
-            }
+            console.log('Cluster scope saved: overriding?', data.clusterId == F.id);
+            this.clusterInstanceMap.set(data.phone, data.clusterId);
+            this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance created');
         });
 
         ON('cluster-instance-removed', (data) => {
-            if (data.clusterId !== this.clusterId) {
-                this.clusterInstanceMap.delete(data.phone);
-                this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance removed');
-            }
+            this.clusterInstanceMap.delete(data.phone);
+            this.logger.info({ phone: data.phone, clusterId: data.clusterId }, 'Remote instance removed');
         });
 
         ON('cluster-health-check', (data) => {
@@ -1510,88 +1530,51 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
             });
         });
 
-        ON('cluster-find-instance', (data) => {
-            const instance = this.instances.get(data.phone);
-            if (instance) {
-                EMIT2('cluster-instance-found', {
-                    phone: data.phone,
-                    clusterId: this.clusterId,
-                    requestId: data.requestId,
-                    found: true
-                });
-            }
-        });
 
-        ON('cluster-broadcast-message', (data) => {
-            // Handle messages that need to be broadcasted to all instances
-            if (data.targetCluster === this.clusterId || data.targetCluster === 'all') {
-                const instance = this.instances.get(data.phone);
-                if (instance) {
-                    instance.handleClusterMessage(data.message);
-                }
-            }
-        });
+        
     }
 
-    async createInstance(phone, config = {}) {
-        // Check if instance exists locally
-        if (this.instances.has(phone)) {
-            throw new Error(`Instance for ${phone} already exists on cluster ${this.clusterId}`);
-        }
+    async createInstance(phone, data) {
+        const redisKey = `lock:instance:${phone}`;
+        const lockTTL = 4000; // 4 seconds max hold
+        const lockToken = UID();
 
-        // Check if instance exists on other clusters
-        const existsOnOtherCluster = await this.checkInstanceExistsGlobally(phone);
-        if (existsOnOtherCluster) {
-            throw new Error(`Instance for ${phone} already exists on cluster ${existsOnOtherCluster}`);
-        }
-
-        if (this.instances.size >= this.maxInstancesPerCluster) {
-            throw new Error(`Maximum number of instances per cluster reached (${this.maxInstancesPerCluster})`);
+        const acquired = await MAIN.redis.set(redisKey, lockToken, 'NX', 'PX', lockTTL);
+        if (!acquired) {
+            console.warn(`[LOCK] Redis denied instance creation for ${phone}`);
+            return false;
         }
 
         try {
-            const instanceConfig = { 
-                ...this.config, 
-                ...config,
-                clusterId: this.clusterId,
-                clusterAware: true,
-                managerid: this.index
-            };
-            
-            // const instance = new ClusterAwareWhatsAppInstance(phone, instanceConfig);
-            const instance = new WhatsAppInstance(phone, instanceConfig);
+            const exists = await this.checkInstanceExistsGlobally(phone);
+            if (exists) {
+                console.warn(`[DUPLICATE] Instance already exists on ${exists} for ${phone}`);
+                return false;
+            }
 
-            // Setup instance event handlers
+            const instance = new WhatsAppInstance(phone, data);
+
+            instance.initialize();
+
+            // set handlers
             this.setupInstanceHandlers(instance);
 
-            // Initialize instance
-            await instance.initialize();
-
-            // Store instance locally
-            this.instances.set(phone, instance);
-
-            // Notify other clusters
-            EMIT2('cluster-instance-created', {
-                phone: phone,
-                clusterId: this.clusterId,
-                timestamp: Date.now()
-            });
-
-            this.logger.info({ 
-                phone, 
-                instanceId: instance.id, 
-                clusterId: this.clusterId 
-            }, 'Instance created successfully');
-            
-            this.emit('instance-created', { phone, instance });
-
-            return instance;
-
-        } catch (error) {
-            this.logger.error({ phone, error, clusterId: this.clusterId }, 'Failed to create instance');
-            throw error;
+            MAIN.instances.set(phone, instance);
+            EMIT2('cluster-instance-created', { phone, clusterId: F.id });
+            console.log(`[CREATE] Instance ${phone} bootstrapped on ${F.id}`);
+            return true;
+        } catch (err) {
+            console.error(`[FAILURE] Error creating instance for ${phone}:`, err);
+            return false;
+        } finally {
+            const value = await MAIN.redis.get(redisKey);
+            if (value === lockToken) {
+                await MAIN.redis.del(redisKey);
+                console.log(`[UNLOCK] Redis lock released for ${phone}`);
+            }
         }
-    }
+    };
+
 
     async createInstanceWithPairingCode(phone, config = {}) {
         const pairingConfig = {
@@ -1604,36 +1587,19 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
     }
 
     async checkInstanceExistsGlobally(phone) {
-        return new Promise((resolve) => {
-            const requestId = Date.now() + Math.random();
-            let responses = 0;
-            const timeout = setTimeout(() => {
-                resolve(false);
-            }, 1000);
-
-            const responseHandler = (data) => {
-                if (data.requestId === requestId) {
-                    responses++;
-                    if (data.found) {
-                        clearTimeout(timeout);
-                        resolve(data.clusterId);
-                    }
-                }
-            };
-
-            ON('cluster-instance-found', responseHandler);
-
-            EMIT2('cluster-find-instance', {
-                phone: phone,
-                requestId: requestId
-            });
-        });
+        try {
+            const response = await MAIN.clusterproxy.sendWithAck('cluster-find-instance', { phone, clusterId: F.id }, { retries: 2, timeout: 30000 });
+            const data = await MAIN.clusterproxy.unwrap(response);
+            return data?.found ? data.clusterId : false;
+        } catch (err) {
+            console.warn(`[ClusterProxy] Fallback triggered: ${err.message}`);
+            return false; // Fallback to local state if no ACK
+        }
     }
 
-
-    restore_session(data){
-        console.log(`[${F.id}] restoring ${data.phone}`);
+    restore_session(data) {
         if (data.managerid == this.index && data.clusterid == this.clusterId) {
+            console.log(`[${F.id}] restoring ${data.phone}`);
             this.createInstance(data.phone);
         }
     }
@@ -1641,69 +1607,69 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
     setupInstanceHandlers(instance) {
 
         instance.on('error', (error) => {
-            this.logger.error({ 
-                instanceId: instance.id, 
-                phone: instance.phone, 
+            this.logger.error({
+                instanceId: instance.id,
+                phone: instance.phone,
                 error,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Instance error');
             this.emit('instance-error', { instance, error });
         });
 
 
         instance.on('pairing-code', (data) => {
-            this.logger.info({ 
-                instanceId: instance.id, 
-                phone: data.phone, 
+            this.logger.info({
+                instanceId: instance.id,
+                phone: data.phone,
                 code: data.code,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Pairing code generated');
             this.emit('pairing-code', data);
         });
 
         instance.on('pairing-code-expired', (data) => {
-            this.logger.warn({ 
-                instanceId: instance.id, 
+            this.logger.warn({
+                instanceId: instance.id,
                 phone: data.phone,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Pairing code expired');
             this.emit('pairing-code-expired', data);
         });
 
         instance.on('pairing-code-error', (data) => {
-            this.logger.error({ 
-                instanceId: instance.id, 
-                phone: data.phone, 
+            this.logger.error({
+                instanceId: instance.id,
+                phone: data.phone,
                 error: data.error,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Pairing code error');
             this.emit('pairing-code-error', data);
         });
 
         instance.on('resource-critical', async (data) => {
-            this.logger.warn({ 
-                instanceId: instance.id, 
-                phone: instance.phone, 
+            this.logger.warn({
+                instanceId: instance.id,
+                phone: instance.phone,
                 data,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Instance resource critical');
             await this.removeInstance(instance.phone, 'resource-critical');
         });
 
         instance.on('max-reconnect-attempts', async () => {
-            this.logger.warn({ 
-                instanceId: instance.id, 
+            this.logger.warn({
+                instanceId: instance.id,
                 phone: instance.phone,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Instance max reconnect attempts reached');
             await this.removeInstance(instance.phone, 'max-reconnect-attempts');
         });
 
         instance.on('shutdown', () => {
-            this.logger.info({ 
-                instanceId: instance.id, 
+            this.logger.info({
+                instanceId: instance.id,
                 phone: instance.phone,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Instance shutdown');
             this.instances.delete(instance.phone);
         });
@@ -1719,6 +1685,15 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
                     sourceCluster: this.clusterId
                 });
             }
+        });
+        instance.on('ask', (data) => {
+            EMIT2('cluster-broadcast-message', {
+                event: 'ask',
+                phone: instance.phone,
+                message: data,
+                targetCluster: data.targetCluster || 'all',
+                sourceCluster: F.id
+            });
         });
     }
 
@@ -1740,19 +1715,19 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
                 timestamp: Date.now()
             });
 
-            this.logger.info({ 
-                phone, 
-                reason, 
-                clusterId: this.clusterId 
+            this.logger.info({
+                phone,
+                reason,
+                clusterId: this.clusterId
             }, 'Instance removed successfully');
-            
+
             this.emit('instance-removed', { phone, reason });
 
         } catch (error) {
-            this.logger.error({ 
-                phone, 
-                error, 
-                clusterId: this.clusterId 
+            this.logger.error({
+                phone,
+                error,
+                clusterId: this.clusterId
             }, 'Error removing instance');
             throw error;
         }
@@ -1761,22 +1736,22 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
     getInstance(phone) {
         return this.instances.get(phone);
     }
-
     async getInstanceGlobally(phone) {
-        // First check locally
-        const localInstance = this.instances.get(phone);
-        if (localInstance) {
-            return { instance: localInstance, clusterId: this.clusterId };
-        }
-
         // Check cluster map
+
+        console.time('GS');
         const clusterId = this.clusterInstanceMap.get(phone);
+        console.timeEnd('GS');
+        console.log(clusterId);
         if (clusterId) {
             return { instance: null, clusterId: clusterId };
         }
 
         // Query all clusters
+        console.time('GS2');
         const clusterLocation = await this.checkInstanceExistsGlobally(phone);
+        console.timeEnd('GS2');
+        console.log('Super', clusterLocation);
         if (clusterLocation) {
             return { instance: null, clusterId: clusterLocation };
         }
@@ -1871,10 +1846,10 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
 
         // Remove unhealthy instances
         for (const instance of unhealthyInstances) {
-            this.logger.warn({ 
-                instanceId: instance.id, 
+            this.logger.warn({
+                instanceId: instance.id,
                 phone: instance.phone,
-                clusterId: this.clusterId 
+                clusterId: this.clusterId
             }, 'Removing unhealthy instance');
             await this.removeInstance(instance.phone, 'health-check-failed');
         }
@@ -1896,10 +1871,10 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
         const instances = this.getAllInstances();
         const shutdownPromises = instances.map(instance =>
             instance.gracefulShutdown('manager-shutdown').catch(error =>
-                this.logger.error({ 
-                    error, 
+                this.logger.error({
+                    error,
                     instanceId: instance.id,
-                    clusterId: this.clusterId 
+                    clusterId: this.clusterId
                 }, 'Error during instance shutdown')
             )
         );
@@ -1962,10 +1937,10 @@ class BootLoader extends EventEmitter {
         this.healthCheckInterval = config.healthCheckInterval || 10000;
         this.maxInstancesPerCluster = config.maxInstancesPerCluster || 250;
         this.instanceDistribution = new Map(); // phone -> clusterId mapping
-        
+
         // Strategy for load balancing
         this.balancingStrategy = config.balancingStrategy || 'round-robin'; // round-robin, least-loaded, resource-aware
-        
+
         this.setupClusterMonitoring();
         this.startHealthMonitoring();
     }
@@ -1978,9 +1953,11 @@ class BootLoader extends EventEmitter {
 
         // Listen for instance creation/removal across clusters
         ON('cluster-instance-created', (data) => {
+            console.log('Cluster scop override', data.clusterId != F.id);
             this.instanceDistribution.set(data.phone, data.clusterId);
             this.updateClusterInstanceCount(data.clusterId, 1);
         });
+
 
         ON('cluster-instance-removed', (data) => {
             this.instanceDistribution.delete(data.phone);
@@ -2006,14 +1983,14 @@ class BootLoader extends EventEmitter {
 
     isClusterHealthy(health) {
         if (!health) return false;
-        
+
         const memoryUsage = health.systemMemory;
         const memoryThreshold = this.config.memoryThreshold || 0.8;
         const memoryUsagePercent = memoryUsage.heapUsed / memoryUsage.heapTotal;
-        
-        return memoryUsagePercent < memoryThreshold && 
-               health.healthyInstances > 0 &&
-               health.totalInstances < this.maxInstancesPerCluster;
+
+        return memoryUsagePercent < memoryThreshold &&
+            health.healthyInstances > 0 &&
+            health.totalInstances < this.maxInstancesPerCluster;
     }
 
     getOptimalClusterForNewInstance(phone) {
@@ -2035,11 +2012,11 @@ class BootLoader extends EventEmitter {
 
         switch (this.balancingStrategy) {
             case 'least-loaded':
-                selectedCluster = healthyClusters.reduce((min, cluster) => 
+                selectedCluster = healthyClusters.reduce((min, cluster) =>
                     cluster.instanceCount < min.instanceCount ? cluster : min
                 );
                 break;
-                
+
             case 'resource-aware':
                 selectedCluster = healthyClusters.reduce((best, cluster) => {
                     const currentScore = this.calculateClusterScore(cluster);
@@ -2047,7 +2024,7 @@ class BootLoader extends EventEmitter {
                     return currentScore > bestScore ? cluster : best;
                 });
                 break;
-                
+
             case 'round-robin':
             default:
                 this.roundRobinIndex = (this.roundRobinIndex + 1) % healthyClusters.length;
@@ -2055,8 +2032,8 @@ class BootLoader extends EventEmitter {
                 break;
         }
 
-        return { 
-            clusterId: selectedCluster.clusterId, 
+        return {
+            clusterId: selectedCluster.clusterId,
             reason: this.balancingStrategy,
             clusterLoad: selectedCluster.instanceCount
         };
@@ -2064,11 +2041,11 @@ class BootLoader extends EventEmitter {
 
     calculateClusterScore(cluster) {
         if (!cluster.health) return 0;
-        
+
         const memoryScore = 1 - (cluster.health.systemMemory.heapUsed / cluster.health.systemMemory.heapTotal);
         const loadScore = 1 - (cluster.instanceCount / this.maxInstancesPerCluster);
         const healthScore = cluster.health.healthyInstances / Math.max(1, cluster.health.totalInstances);
-        
+
         return (memoryScore * 0.4) + (loadScore * 0.4) + (healthScore * 0.2);
     }
 
@@ -2087,7 +2064,7 @@ class BootLoader extends EventEmitter {
         for (const [clusterId, cluster] of this.clusters) {
             if (cluster.isHealthy) stats.healthyClusters++;
             stats.totalInstances += cluster.instanceCount || 0;
-            
+
             stats.clusterDetails.push({
                 clusterId,
                 isHealthy: cluster.isHealthy,
@@ -2111,7 +2088,7 @@ class BootLoader extends EventEmitter {
         // Request health from all clusters
         const requestId = Date.now() + Math.random();
         EMIT2('cluster-health-check', { requestId });
-        
+
         // Clean up stale cluster data
         const staleThreshold = Date.now() - (this.healthCheckInterval * 3);
         for (const [clusterId, cluster] of this.clusters) {
@@ -2126,12 +2103,12 @@ class BootLoader extends EventEmitter {
         // Get current distribution
         const stats = this.getClusterStats();
         const avgInstancesPerCluster = stats.totalInstances / stats.healthyClusters;
-        
+
         // Find overloaded clusters
         const overloadedClusters = stats.clusterDetails.filter(
             cluster => cluster.isHealthy && cluster.instanceCount > avgInstancesPerCluster * 1.5
         );
-        
+
         // Find underloaded clusters
         const underloadedClusters = stats.clusterDetails.filter(
             cluster => cluster.isHealthy && cluster.instanceCount < avgInstancesPerCluster * 0.5
@@ -2139,7 +2116,7 @@ class BootLoader extends EventEmitter {
 
         if (overloadedClusters.length > 0 && underloadedClusters.length > 0) {
             console.log('Redistribution needed', { overloadedClusters, underloadedClusters });
-            
+
             // Emit redistribution event
             EMIT2('cluster-redistribution-needed', {
                 overloaded: overloadedClusters,
@@ -2162,15 +2139,14 @@ class ManagerHub extends BootLoader {
         super(config);
         this.mincount = config.mincount || 4;
         this.maxcount = config.maxcount || 10;
-        this.count  = config.count || this.mincount;
+        this.count = config.count || this.mincount;
         this.managers = {};
         this.createmanagers();
-        this.setupRoutes();
     }
 
-    createmanagers () {
+    createmanagers() {
         for (var i = 0; i < this.count; i++) {
-            let manager = new ClusterWhatsAppSessionManager({index: i });
+            let manager = new ClusterWhatsAppSessionManager({ index: i });
             this.managers[i] = manager;
             if (i == 0)
                 MAIN.sessionManager = manager;
@@ -2189,315 +2165,14 @@ class ManagerHub extends BootLoader {
         const randomIndex = Math.floor(Math.random() * keys.length);
         return this.managers[keys[randomIndex]];
     }
-    
-
-
     sethandlers() {
-        this.on('restore', function(data) {
+        this.on('restore', function (data) {
             let values = Object.values(this.managers);
             for (var value of values) {
                 value.restore_session(data);
             }
         })
     }
-
-
-    setupRoutes() {
-        
-
-
-        NEWSCHEMA('ManagerHub', function(schema) {
-            schema.action('config_save', {
-                name: 'Update or save Config data',
-                params: '*phone:String',
-                route: '+POST /api/config/{phone}/',
-                action: async function($, model) {
-                    let phone = $.params.phone;
-                    const result = await FUNC.findInstanceCluster(phone);
-                    
-                    if (!result) {
-                        $.invalid('Whatsapp session not found');
-                        return;
-                    }
-
-                    if (!result.local) {
-                        let payload = {};
-                        payload.clusterId = F.id;
-                        payload.schema = 'ManagerHub';
-                        payload.action = 'config_save';
-                        payload.params = $.params;
-                        payload.data = payload.model = model;
-                        payload.query = $.query;
-
-                        let res = await MAIN.clusterproxy.getresponse(payload);
-                        $.callback(res);
-                        return;
-                    }
-
-                    result.instance.memory_refresh(model, function () {
-                        $.success();
-                    });
-                }
-            });
-
-            schema.action('config_read', {
-                name: 'Read informations about a given config',
-                params: '*phone:String',
-                route: '+GET /api/config/{phone}/',
-                action: async function($, model) {
-                    let phone = $.params.phone;
-                    const result = await FUNC.findInstanceCluster(phone);
-                    
-                    if (!result) {
-                        $.invalid('Whatsapp session not found');
-                        return;
-                    }
-            
-                    if (!result.local) {
-                        let payload = {};
-                        payload.clusterId = F.id;
-                        payload.schema = 'ManagerHub';
-                        payload.action = 'config_read';
-                        payload.params = $.params;
-                        payload.data = payload.model = model;
-                        payload.query = $.query;
-
-                        let res = await MAIN.clusterproxy.getresponse(payload);
-                        $.callback(res);
-                        return;
-                    }
-
-                    $.callback(result.instance.Data);
-                }
-            });
-
-
-            schema.action('rpc', {
-                name: 'Remote PC Controller',
-                params: '*phone:String',
-                route: '+POST /api/rpc/{phone}/',
-                input: 'topic:String,type:String,content:String,data:Object',
-                action: async function($, model) {
-                    let phone = $.params.phone;
-                    const result = await FUNC.findInstanceCluster(phone);
-                    if (!result) {
-                        $.invalid('Whatsapp session not found');
-                        return;
-                    }
-                    if (!result.local) {
-                        let payload = {};
-                        payload.clusterId = F.id;
-                        payload.schema = 'ManagerHub';
-                        payload.action = 'rpc';
-                        payload.params = $.params;
-                        payload.data = payload.model = model;
-                        payload.query = $.query;
-
-                        let res = await MAIN.clusterproxy.getresponse(payload);
-                        $.callback(res);
-                        return;
-                    }
-
-                    $.ws = false;
-                    let res = result.instance.message(model);
-                    $.callback(res);
-
-                }
-            });
-
-            schema.action('send', {
-                name: 'Send text message to a whatsapp user',
-                params: '*phone:String',
-                input: '*chatid:String,content:String',
-                route: '+POST /api/send/{phone}/',
-                action: async function($, model) {
-                    let phone =  $.params.phone;
-                    const result = await FUNC.findInstanceCluster(phone);
-                    
-                    if (!result) {
-                        $.invalid('Whatsapp instance not found');
-                        return;
-                    }
-            
-                    if (!result.local) {
-                        let payload = {};
-                        payload.clusterId = F.id;
-                        payload.schema = 'ManagerHub';
-                        payload.action = 'send';
-                        payload.params = $.params;
-                        payload.data = payload.model = model;
-                        payload.query = $.query;
-
-                        let res = await MAIN.clusterproxy.getresponse(payload);
-                        $.callback(res);
-                        return;
-                    }
-            
-                    const instance = result.instance;
-                    if (instance.state == 'open') {
-                        instance.sendMessage(model);
-                        instance.usage($);
-                    }
-            
-                    if (instance.state == 'open')
-                        $.success();
-                    else
-                        $.callback({ success: false, state: instance.state });
-
-                }
-            });
-
-
-            schema.action('media', {
-                name: 'Send Media to a whatsapp number',
-                input: '*chatid:Phone,type:String,topic:String,content:Object',
-                params: '*phone:String',
-                route: '+POST /api/media/{phone}/',
-                action: async function($, model) {
-                    let phone = $.params.phone;
-                    const result = await FUNC.findInstanceCluster(phone);
-                    
-                    if (!result) {
-                        $.invalid('Whatsappp session not Found');
-                        return;
-                    }
-            
-                    if (!result.local) {
-                        let payload = {};
-                        payload.clusterId = F.id;
-                        payload.schema = 'ManagerHub';
-                        payload.action = 'media';
-                        payload.params = $.params;
-                        payload.data = payload.model = model;
-                        payload.query = $.query;
-
-                        let res = await MAIN.clusterproxy.getresponse(payload);
-                        $.callback(res);
-                        return;
-                    }
-            
-                    const instance = result.instance;
-                    if (instance.state == 'open') {
-                        instance.send_file($.body);
-                        instance.usage($);
-                    }
-            
-                    if (instance.state == 'open')
-                        $.success();
-                    else
-                        $.callback({ success: false, state: instance.state });
-                    
-                }
-            });
-
-        });
-
-  
-        // Cluster-aware WebSocket handling
-        ROUTE('+SOCKET /api/ws/{phone}/', async function (phone) {
-            const result = await FUNC.findInstanceCluster(phone);
-            const self = this;
-            const socket = self;
-            
-            if (!result) {
-                self.send({ success: false, value: 'Whatsapp Session not found' });
-                return;
-            }
-            let instance = result.instance;
-
-
-            if (result.local) {
-                instance.ws = socket;
-                instance = result.instance;
-
-            }
-
-            self.ws = true;
-            self.autodestroy();
-            
-            socket.on('open', function (client) {
-                client.phone = phone;
-                if (result.local)
-                    instance.ws_clients[client.id] = client;
-
-                MAIN.clusterproxy && MAIN.clusterproxy.setconnection(phone, F.id);
-
-                const timeout = setTimeout(function () {
-                    if (result.local) {
-                        if (instance.state == 'open')
-                            client.send({ type: 'ready', clusterId: F.id });
-
-                    } 
-                    clearTimeout(timeout);
-                }, 2000);
-            });
-            socket.on('message',async function (client, msg) {
-                if (!result.local) {
-                    let res = await MAIN.clusterproxy.sendws(phone, { clusterId: F.id, msg: msg });
-                    return client.send(res ? res.output : { success: false, value: 'WS timeout' });
-                }
-                if (msg && msg.topic) {
-                    self.client = client;
-                    instance.message(msg, self);
-                }
-
-                if (msg && msg.type) {
-                    switch (msg.type) {
-                        case 'text':
-                            if (instance.state == 'open') {
-                                instance.send_message(msg);
-                            }
-                            break;
-                        case 'file':
-                            if (instance.state == 'open') {
-                                instance.send_file(msg);
-                            }
-                            break;
-                       
-                    }
-                    
-                    if (instance.state == 'open')
-                        client.send({ success: true, clusterId: inst.clusterId });
-                    else
-                        client.send({ success: false, state: instance.state, clusterId: inst.clusterId });
-                }
-            });
-            
-            socket.on('disconnect', function (client) {
-                console.log('Client disconnected:', client.id, 'cluster:', inst.clusterId);
-                delete instance.ws_clients[client.id];
-            });
-        });
-
-        // Cluster management routes
-        ROUTE('+GET /api/cluster/health/', async function() {
-            const health = await inst.getGlobalHealthStatus();
-            this.json(health);
-        });
-
-        ROUTE('+GET /api/cluster/instances/', function() {
-            const instances = Array.from(MAIN.clusters.entries()).map(([phone, clusterId]) => ({
-                phone,
-                clusterId,
-                local: false
-            }));
-            
-            const localInstances = Array.values(MAIN.instances).map(instance => ({
-                phone: instance.phone,
-                clusterId: inst.clusterId,
-                local: true,
-                state: instance.state
-            }));
-
-            this.json({
-                clusterId: inst.clusterId,
-                localInstances,
-                remoteInstances: instances,
-                total: localInstances.length + instances.length
-            });
-        });
-    }
-
 }
 
 class ClusterProxy {
@@ -2515,7 +2190,7 @@ class ClusterProxy {
 
     async proxyRequest(phone, method, path, data) {
         const clusterId = this.managerHub.getClusterForInstance(phone);
-        
+
         if (!clusterId) {
             throw new Error(`No cluster found for instance: ${phone}`);
         }
@@ -2537,7 +2212,7 @@ class ClusterProxy {
         };
     }
     async getresponse(data, timeout) {
-        return new Promise(function(resolve) {
+        return new Promise(function (resolve) {
             const reqid = UID();
             let responses = 0;
 
@@ -2545,7 +2220,7 @@ class ClusterProxy {
                 resolve(false);
             }, timeout || 30000);
 
-            const callback = function(response) {
+            const callback = function (response) {
                 if (response.reqid === reqid) {
                     responses++;
                     if (response.found) {
@@ -2565,8 +2240,8 @@ class ClusterProxy {
         let reqid = payload.reqid;
         let clusterid = data.clusterId;
         let instance = MAIN.instances.get(data.params.phone);
-        
-        console.log('GREAT');  
+
+        console.log('GREAT');
         if (clusterid == F.id && instance) {
             let schema = data.schema;
             let action = data.action;
@@ -2576,7 +2251,7 @@ class ClusterProxy {
                 data.query && builder.query(data.query);
                 data.params && builder.params(data.params);
                 data.user && builder.user(data.user);
-                builder.callback(function(err, res) {
+                builder.callback(function (err, res) {
                     if (!err) {
                         EMIT2('cluster-proxy-response', { clusterId: F.id, found: true, response: res, reqid });
                     }
@@ -2618,13 +2293,13 @@ class ClusterProxy {
 
     async sendws(phone, data) {
         return new Promise(function (resolve) {
-            let reqid =  UID();
+            let reqid = UID();
             let responses = 0;
 
-            let tm = setTimeout(function() {
+            let tm = setTimeout(function () {
                 resolve(false);
             }, 60000);
-            const callback = function(response) {
+            const callback = function (response) {
                 if (response.reqid == reqid) {
                     responses++;
 
@@ -2666,40 +2341,141 @@ class ClusterProxy {
                             instance.send_file(msg);
                         }
                         break;
-                   
+
                 }
             }
 
-            response.response.clusterid =  F.id;
+            response.response.clusterid = F.id;
             response.response.state = instance.state
             response.found = true;
-            if (instance.state == 'open') 
+            if (instance.state == 'open')
                 response.response.success = true;
-            else 
+            else
                 response.response.success = false;
 
             EMIT2('connection-ws-rx', response);
-        }   
+        }
     }
+
+    async sendWithAck(event, payload = {}, config = {}) {
+        const requestId = UID();
+        payload.requestId = requestId;
+        const ackEvent = `${event}_ack_${requestId}`;
+        const timeout = config.timeout || 1000;
+        const retries = config.retries || 0;
+
+        return new Promise((resolve, reject) => {
+            let attempt = 0;
+
+            const trySend = () => {
+                if (attempt > retries) {
+                    OFF(ackEvent, handler);
+                    return reject(new Error(`[ClusterProxy] ACK failed: ${event} after ${retries} retries`));
+                }
+
+                EMIT2(event, payload);
+                attempt++;
+                timer = setTimeout(trySend, timeout);
+            };
+
+            const handler = (response) => {
+                let res = response.data
+
+                if (!res) return;
+
+                if (response.requestId == requestId && res.found) {
+                    clearTimeout(timer);
+                    OFF(ackEvent, handler);
+                    resolve(response);
+                };
+            };
+
+
+            if (ACK_LISTENERS.has(ackEvent)) {
+                console.warn(`[ClusterProxy] Duplicate ACK listener on ${ackEvent}`);
+                OFF(ackEvent, ACK_LISTENERS.get(ackEvent));
+            }
+
+            ACK_LISTENERS.set(ackEvent, handler);
+            ON(ackEvent, handler);
+            let timer = setTimeout(trySend, 0); // fire immediately
+        });
+    }
+
+    async listenWithAck(event, handlerFn) {
+        ON(event, async (payload) => {
+            const requestId = payload.requestId;
+            if (!requestId) return console.warn(`[ClusterProxy] Ignoring ${event} with no requestId`);
+
+            try {
+                const response = await handlerFn(payload);
+                EMIT2(`${event}_ack_${requestId}`, {
+                    requestId,
+                    status: 'ok',
+                    data: response
+                });
+            } catch (err) {
+                EMIT2(`${event}_ack_${requestId}`, {
+                    requestId,
+                    status: 'error',
+                    error: err.message || 'Handler error'
+                });
+            }
+        });
+    };
+
+    async unwrap(response) {
+        if (!response) throw new Error('[ClusterProxy] Empty response');
+        if (response.status === 'ok') return response.data;
+        throw new Error(response.error || '[ClusterProxy] Unknown ACK error');
+    };
+
+    async buildPayloadFromSchema($, model, schema, action) {
+        return {
+            clusterId: $.clusterId,
+            schema: schema,
+            action: action,
+            params: $.params,
+            query: $.query,
+            data: model,
+            model: model
+        };
+    };
+
+    async callSchemaRemote ($, model, schema, action) {
+        try {
+            const payload = this.buildPayloadFromSchema($, model, schema, action);
+            const response = await this.sendWithAck('cluster-schema-call', payload, { timeout: 30000, retries: 1 });
+            let res = await this.unwrap(response);
+
+            let output = {};
+            output.succcess = true;
+            if (res.data && res.data.output) {
+                output.value = res.data.ouput;
+            }
+
+            return  output;
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    };
 }
 
-ON('ready', function() {
+ON('ready', function () {
     let hub = MAIN.hub = new ManagerHub();
-    hub.on('ready', function() {
+    hub.on('ready', function () {
         U.ls(PATH.databases(), function (files, dirs) {
             var arr = [];
-    
+
             var index = 0;
 
-            files.wait(async function(file, next) {
+            files.wait(async function (file, next) {
                 let name = file.split('databases')[1].substring(1);
                 let is = name.match(/^memorize_\d+\.json/);
                 if (is) {
                     F.Fs.readFile(PATH.databases(name), (err, data) => {
-    
                         if (err) {
                             console.error("Error reading config file:", err);
-    
                         } else {
                             if (index < 5) {
                                 let parsed = JSON.parse(data);
@@ -2712,12 +2488,106 @@ ON('ready', function() {
                 }
 
                 next();
-            }, function() {
+            }, function () {
                 MAIN.clusterproxy = new ClusterProxy(hub);
+                MAIN.clusterproxy.listenWithAck('cluster-find-instance', async function (payload) {
+                    const { phone, clusterId } = payload;
+                    const instance = MAIN.instances.get(phone);
+                    let okay = false;
+                    if (instance && (clusterId != F.id))
+                        okay = true;
+
+                    console.log('GLOBAL SEARCH', okay, F.id);
+                    return { found: okay, clusterId: F.id };
+                });
+
+
+                MAIN.clusterproxy.listenWithAck('proxy-ws-message', async function (payload) {
+                    const { phone, msg, clusterId } = payload;
+                    const instance = MAIN.instances.get(phone);
+
+                    if (MAIN.wsclients.has(phone))
+                        arr = MAIN.wsclients.get(phone);
+
+                    if (!instance || instance.state !== 'open') {
+                        throw new Error(`[WS PROXY] No active instance for ${phone} on ${F.id}`);
+                    }
+
+                    // Register remote proxy client if not already tracked
+                    const proxyId = `proxy-${clusterId}`;
+                    if (!instance.ws_clients[proxyId]) {
+                        instance.ws_clients[proxyId] = {
+                            id: proxyId,
+                            remote: true,
+                            phone,
+                            send: function (data) {
+                                this.output = data;
+                            }
+                        };
+                        console.log(`[SYNC] Registered proxy client ${proxyId} on ${F.id}`);
+                    }
+
+                    const proxyClient = instance.ws_clients[proxyId];
+
+                    let fakeSocket = { client: proxyClient };
+                    fakeSocket.send = fakeSocket.json = function (output) {
+                        proxyClient.output = output;
+                    }
+                    nodeinc
+                    if (msg?.topic) {
+                        instance.message(msg, fakeSocket);
+                    } else if (msg?.type) {
+                        switch (msg.type) {
+                            case 'text':
+                                instance.send_message(msg, fakeSocket);
+                                break;
+                            case 'file':
+                                instance.send_file(msg, fakeSocket);
+                                break;
+                            default:
+                                console.warn(`[WS PROXY] Unsupported msg.type: ${msg.type}`);
+                                break;
+                        }
+
+                        fakeSocket.send({
+                            success: instance.state === 'open',
+                            state: instance.state,
+                            clusterId: F.id
+                        });
+                    }
+
+                    console.log(`[WS PROXY] Routed message to ${phone} on ${F.id}`);
+                    return { found: true, output: proxyClient.output || { success: true } };
+                });
+
+                MAIN.clusterproxy.listenWithAck('cluster-schema-call', async function (payload) {
+                    const { schema, action, data, params, query, user } = payload;
+                    if (!schema || !action) throw new Error('Invalid schema/action');
+                    return new Promise((resolve) => {
+                        let builder = CALL(schema + ' --> ' + action, data);
+                        query && builder.query(query);
+                        params && builder.params(params);
+                        user && builder.user(user);
+                        builder.callback(function (err, res) {
+                            resolve({ found: true, output: res || err })
+                        });
+                    });
+                });
             });
-    
         });
     });
 });
 
-
+ON('cluster-broadcast-message', (data) => {
+    // Handle messages that need to be broadcasted to all instances
+    if (data.targetCluster == this.clusterId || data.targetCluster == 'all') {
+        if (data.event && data.event == 'ask') {
+            let arr = MAIN.wsclients.get(data.phone) || [];
+            arr.wait(async function(client, next) {
+                console.log(client);
+                client && client.send(data.message);
+                next();
+            });
+        }
+    }
+});

@@ -15,7 +15,7 @@ NEWSCHEMA('Instance', function(schema) {
 
                 if (!result.local) {
                     let payload = {};
-                    payload.clusterId = F.id;
+                    payload.clusterId = result.clusterId;
                     payload.schema = 'Instance';
                     payload.action = 'read';
                     payload.params = $.params;
@@ -56,7 +56,7 @@ NEWSCHEMA('Instance', function(schema) {
 
                 if (!result.local) {
                     let payload = {};
-                    payload.clusterId = F.id;
+                    payload.clusterId = result.clusterId;
                     payload.schema = 'Instance';
                     payload.action = 'read';
                     payload.params = $.params;
@@ -91,7 +91,7 @@ NEWSCHEMA('Instance', function(schema) {
 
                 if (!result.local) {
                     let payload = {};
-                    payload.clusterId = F.id;
+                    payload.clusterId = result.clusterId;
                     payload.schema = 'Instance';
                     payload.action = 'pairing_refresh';
                     payload.params = $.params;
@@ -139,7 +139,7 @@ NEWSCHEMA('Instance', function(schema) {
 
                 if (!result.local) {
                     let payload = {};
-                    payload.clusterId = F.id;
+                    payload.clusterId = result.clusterId;
                     payload.schema = 'Instance';
                     payload.action = 'pairing_get';
                     payload.params = $.params;
@@ -181,20 +181,8 @@ NEWSCHEMA('Instance', function(schema) {
                     try {
                         const instance = await MAIN.hub.getrandom().createInstanceWithPairingCode(phone, model);
                         instance && instance.on('pairing-code', function(data){
-                            console.log('ON PAIRING CODE', data);
                             $.callback(data);
                         });
-                        // let timeout = setTimeout(() => {
-                        //     console.log(instance);
-                        //     $.callback({
-                        //         success: true,
-                        //         phone: phone,
-                        //         clusterId: MAIN.sessionManager.clusterId,
-                        //         instanceId: instance.id,
-                        //         pairingCode: instance.getCurrentPairingCode()
-                        //     });
-                        //     clearTimeout(timeout);
-                        // }, 15000);
                         
                     } catch (error) {
                         $.callback({
