@@ -1739,19 +1739,13 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
     async getInstanceGlobally(phone) {
         // Check cluster map
 
-        console.time('GS');
         const clusterId = this.clusterInstanceMap.get(phone);
-        console.timeEnd('GS');
-        console.log(clusterId);
         if (clusterId) {
             return { instance: null, clusterId: clusterId };
         }
 
         // Query all clusters
-        console.time('GS2');
         const clusterLocation = await this.checkInstanceExistsGlobally(phone);
-        console.timeEnd('GS2');
-        console.log('Super', clusterLocation);
         if (clusterLocation) {
             return { instance: null, clusterId: clusterLocation };
         }
@@ -2497,7 +2491,6 @@ ON('ready', function () {
                     if (instance && (clusterId != F.id))
                         okay = true;
 
-                    console.log('GLOBAL SEARCH', okay, F.id);
                     return { found: okay, clusterId: F.id };
                 });
 

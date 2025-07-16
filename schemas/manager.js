@@ -2,7 +2,6 @@ NEWSCHEMA('Manager', function(schema) {
     schema.action('config_save', {
         name: 'Update or save Config data',
         params: '*phone:String',
-        route: '+POST /api/config/{phone}/',
         action: async function($, model) {
             let phone = $.params.phone;
             const result = await FUNC.findInstanceCluster(phone);
@@ -28,7 +27,6 @@ NEWSCHEMA('Manager', function(schema) {
     schema.action('config_read', {
         name: 'Read informations about a given config',
         params: '*phone:String',
-        route: '+GET /api/config/{phone}/',
         action: async function($) {
             let phone = $.params.phone;
             const result = await FUNC.findInstanceCluster(phone);
@@ -53,7 +51,6 @@ NEWSCHEMA('Manager', function(schema) {
     schema.action('rpc', {
         name: 'Remote PC Controller',
         params: '*phone:String',
-        route: '+POST /api/rpc/{phone}/',
         input: 'topic:String,type:String,content:String,data:Object',
         action: async function($, model) {
             let phone = $.params.phone;
@@ -73,12 +70,10 @@ NEWSCHEMA('Manager', function(schema) {
             $.callback(res);
         }
     });
-
     schema.action('send', {
         name: 'Send text message to a whatsapp user',
         params: '*phone:String',
         input: '*chatid:String,content:String',
-        route: '+POST /api/send/{phone}/',
         action: async function($, model) {
             let phone =  $.params.phone;
             const result = await FUNC.findInstanceCluster(phone);
@@ -113,7 +108,6 @@ NEWSCHEMA('Manager', function(schema) {
         name: 'Send Media to a whatsapp number',
         input: '*chatid:Phone,type:String,topic:String,content:Object',
         params: '*phone:String',
-        route: '+POST /api/media/{phone}/',
         action: async function($, model) {
             let phone = $.params.phone;
             const result = await FUNC.findInstanceCluster(phone);

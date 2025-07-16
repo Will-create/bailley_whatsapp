@@ -2,10 +2,9 @@
 exports.install = function () {
     // Create instance with pairing code
     ROUTE('+POST /api/instances/pairing/ *Instance --> pairing');
-    
     // Delete instance
     ROUTE('+DELETE /api/instances/{phone}/     *Instance --> delete');
-    
+        
     // Get instance info (cluster-aware)
     ROUTE('+GET /api/instances/{phone}/     *Instance --> read');
     
@@ -15,6 +14,13 @@ exports.install = function () {
     // Get pairing code
     ROUTE('+GET /api/instances/{phone}/pairing/ *Instance --> pairing_get');
     
+
+    ROUTE('+POST /api/config/{phone}/ *Manager --> config_save');
+    ROUTE('+GET /api/config/{phone}/ *Manager --> config_read');
+    ROUTE('+POST /api/rpc/{phone}/ *Manager --> rpc');
+    ROUTE('+POST /api/send/{phone}/ *Manager --> send');
+    ROUTE('+POST /api/media/{phone}/ *Manager --> media');
+
     // Global health check (all clusters)
     ROUTE('+GET /api/health/global/', async function() {
         const health = await MAIN.sessionManager.getGlobalHealthStatus();
@@ -26,7 +32,6 @@ exports.install = function () {
         const health = MAIN.sessionManager.getLocalHealthStatus();
         this.json(health);
     });
-
 
         // Cluster management routes
         ROUTE('+GET /api/cluster/health/', async function() {
