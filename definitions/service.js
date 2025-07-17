@@ -2454,15 +2454,11 @@ class ClusterProxy {
         }
     };
 }
-
 ON('ready', function () {
     let hub = MAIN.hub = new ManagerHub();
     hub.on('ready', function () {
         U.ls(PATH.databases(), function (files, dirs) {
-            var arr = [];
-
             var index = 0;
-
             files.wait(async function (file, next) {
                 let name = file.split('databases')[1].substring(1);
                 let is = name.match(/^memorize_\d+\.json/);
@@ -2483,96 +2479,13 @@ ON('ready', function () {
 
                 next();
             }, function () {
-                MAIN.clusterproxy = new ClusterProxy(hub);
-                MAIN.clusterproxy.listenWithAck('cluster-find-instance', async function (payload) {
-                    const { phone, clusterId } = payload;
-                    const instance = MAIN.instances.get(phone);
-                    let okay = false;
-                    if (instance && (clusterId != F.id))
-                        okay = true;
-
-                    return { found: okay, clusterId: F.id };
-                });
-
-
-                MAIN.clusterproxy.listenWithAck('proxy-ws-message', async function (payload) {
-                    const { phone, msg, clusterId } = payload;
-                    const instance = MAIN.instances.get(phone);
-
-                    if (MAIN.wsclients.has(phone))
-                        arr = MAIN.wsclients.get(phone);
-
-                    if (!instance || instance.state !== 'open') {
-                        throw new Error(`[WS PROXY] No active instance for ${phone} on ${F.id}`);
-                    }
-
-                    // Register remote proxy client if not already tracked
-                    const proxyId = `proxy-${clusterId}`;
-                    if (!instance.ws_clients[proxyId]) {
-                        instance.ws_clients[proxyId] = {
-                            id: proxyId,
-                            remote: true,
-                            phone,
-                            send: function (data) {
-                                this.output = data;
-                            }
-                        };
-                        console.log(`[SYNC] Registered proxy client ${proxyId} on ${F.id}`);
-                    }
-
-                    const proxyClient = instance.ws_clients[proxyId];
-
-                    let fakeSocket = { client: proxyClient };
-                    fakeSocket.send = fakeSocket.json = function (output) {
-                        proxyClient.output = output;
-                    }
-                    nodeinc
-                    if (msg?.topic) {
-                        instance.message(msg, fakeSocket);
-                    } else if (msg?.type) {
-                        switch (msg.type) {
-                            case 'text':
-                                instance.send_message(msg, fakeSocket);
-                                break;
-                            case 'file':
-                                instance.send_file(msg, fakeSocket);
-                                break;
-                            default:
-                                console.warn(`[WS PROXY] Unsupported msg.type: ${msg.type}`);
-                                break;
-                        }
-
-                        fakeSocket.send({
-                            success: instance.state === 'open',
-                            state: instance.state,
-                            clusterId: F.id
-                        });
-                    }
-
-                    console.log(`[WS PROXY] Routed message to ${phone} on ${F.id}`);
-                    return { found: true, output: proxyClient.output || { success: true } };
-                });
-
-                MAIN.clusterproxy.listenWithAck('cluster-schema-call', async function (payload) {
-                    const { schema, action, data, params, query, user } = payload;
-                    if (!schema || !action) throw new Error('Invalid schema/action');
-                    return new Promise((resolve) => {
-                        let builder = CALL(schema + ' --> ' + action, data);
-                        query && builder.query(query);
-                        params && builder.params(params);
-                        user && builder.user(user);
-                        builder.callback(function (err, res) {
-                            resolve({ found: true, output: res || err })
-                        });
-                    });
-                });
+                
             });
         });
     });
 });
 
 ON('cluster-broadcast-message', (data) => {
-    // Handle messages that need to be broadcasted to all instances
     if (data.targetCluster == this.clusterId || data.targetCluster == 'all') {
         if (data.event && data.event == 'ask') {
             let arr = MAIN.wsclients.get(data.phone) || [];
