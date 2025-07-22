@@ -246,7 +246,7 @@ class WhatsAppInstance extends EventEmitter {
 
         // Resource monitoring
         this.resourceMonitor = new ResourceMonitor({
-            memoryThreshold: config.memoryThreshold || 100 * 1024 * 1024, // 100MB per instance
+            memoryThreshold: config.memoryThreshold || 200 * 1024 * 1024, // 100MB per instance
         });
 
         // Connection management
@@ -537,7 +537,7 @@ class WhatsAppInstance extends EventEmitter {
             t.ws_send(obj);
 
         }
-
+        console.log(obj);
         t.emit('ask', obj);
     }
 
@@ -662,7 +662,12 @@ class WhatsAppInstance extends EventEmitter {
         ctrl && ctrl.ws && ctrl.client.send(output);
     }
 
-    save_file(data) {
+    save_file(data, callback) {
+
+        if (data.ext == 'jpeg' || data.ext == 'jpe')
+            data.ext = 'jpg';
+
+
         var obj = {};
         obj.name = GUID(35) + data.ext;
         obj.file = data.content;
@@ -670,8 +675,8 @@ class WhatsAppInstance extends EventEmitter {
 
         var id = data.custom.dp;
         fs.save(id || UID(), obj.name, obj.file.base64ToBuffer(), function (err, meta) {
-            meta.url = '/' + data.number + '/download/{0}.{1}'.format(meta.id.sign(CONF.salt), meta.ext);
-            //callback && callback(meta);
+            meta.url = '/download/' + data.number + '_{0}.{1}'.format(meta.id.sign(CONF.salt), meta.ext);
+            callback && callback(meta);
         }, data.custom, CONF.ttl);
     }
 
@@ -1284,9 +1289,21 @@ class WhatsAppInstance extends EventEmitter {
     async handleMessages(messageUpdate) {
         if (!messageUpdate || messageUpdate.type !== 'notify') return;
 
+
+         
+
         try {
             // Add messages to queue to handle bursts
             for (const message of messageUpdate.messages) {
+                if (message.message?.protocolMessage?.type === 13) { // REVOKE message type
+                    const key = message.key;
+                    console.log(`Message with key ${key.id} deleted`);
+                    this.handleMessageDelete(message);
+                    continue;
+                    // Implement your logic to handle the deletion here, e.g., update a database
+                }
+
+
                 if (this.messageQueue.length >= this.maxQueueSize) {
                     this.logger.warn('Message queue full, dropping message');
                     continue;
@@ -1321,10 +1338,12 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async processMessage(message) {
+
+        
         // Auto-read messages if enabled
         if (this.config.autoRead && message.key && !message.key.fromMe) {
             try {
-                await this.socket.readMessages([message.key]);
+                //await this.socket.readMessages([message.key]);
             } catch (error) {
                 this.logger.warn({ error }, 'Failed to mark message as read');
             }
@@ -1346,6 +1365,7 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async handleMessageDelete(deleteUpdate) {
+        console.log("[LOUIS BERTSON]", "handling deleted messages", deleteUpdate);
         try {
             this.emit('message-delete', deleteUpdate);
         } catch (error) {
@@ -1354,6 +1374,8 @@ class WhatsAppInstance extends EventEmitter {
     }
 
     async handlePresenceUpdate(presenceUpdate) {
+        console.log("[LOUIS BERTSON]", "handling presence updates", presenceUpdate);
+
         try {
             this.emit('presence-update', presenceUpdate);
         } catch (error) {

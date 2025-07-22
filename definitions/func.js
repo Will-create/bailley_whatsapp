@@ -14,6 +14,37 @@ FUNC.downloadMessage = async function (msg, msgType) {
 };
 
 
+FUNC.getCustomTypeByExtension = function(extension) {
+
+    const videoExtensions = [
+      'mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'mpeg', 'mpg', '3gp', 'm4v'
+    ];
+  
+    const documentExtensions = [
+      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'rtf', 'odt', 'ods', 'odp'
+    ];
+  
+    const otherExtensions = [
+      'zip', 'rar', '7z', 'apk', 'exe', 'dmg', 'tar', 'gz', 'iso', 'bin', 'jar', 'msi', 'xz', 'deb'
+    ];
+  
+    if (videoExtensions.includes(extension)) {
+      return 'video';
+    }
+  
+    if (documentExtensions.includes(extension)) {
+      return 'document';
+    }
+  
+    if (otherExtensions.includes(extension)) {
+      return 'other';
+    }
+  
+    return 'media'; // default fallback
+  }
+  
+
+
 FUNC.generateVC = function (data) {
     const result =
         'BEGIN:VCARD\n' +
@@ -122,11 +153,11 @@ FUNC.getFormattedData = function (phone, baseurl, managerid) {
 FUNC.handle_textonly = async function (message, self, conn) {
     const contentType = getContentType(message.message);
     if (message.key?.remoteJid?.includes("status@broadcast")) return;
-    if (contentType !== "conversation" && contentType !== "extendedTextMessage") return;
-
+    const allowedTypes = ['conversation', 'extendedTextMessage'];
+    if (!allowedTypes.includes(contentType)) return;
     const number = message.key.remoteJid.split("@")[0];
     const chatid = message.key.remoteJid;
-    const fromMe = message.key.fromMe;
+    const fromMe = number == self.phone;
     const isgroup = chatid.includes("@g.us");
     const user = {};
     const group = {};
@@ -149,14 +180,13 @@ FUNC.handle_textonly = async function (message, self, conn) {
         const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
         if (quotedBody) {
             const body = message.message.extendedTextMessage?.text || message.message.conversation;
-            message.body = `"${quotedBody.substring(0, 2200)}": \n\n\n\n${body}`;
+            message.quoted = quotedBody;
         }
     }
 
     const body = message.message.extendedTextMessage?.text || message.message.conversation;
 
-    if (self.Data.sendtyping)
-        await conn.sendPresenceUpdate('composing', chatid);
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
         self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group);
@@ -217,11 +247,9 @@ FUNC.handle_media = async function (message, self, conn) {
     const sender = isgroup ? message.key.participant : chatid;
     const user = {};
     const group = {};
-
     const mtype = getContentType(message.message);
-    if (mtype === 'imageMessage' || mtype === 'audioMessage') return; // Filter only video/docs/others
-
-    if (mtype == "conversation" || mtype == "extendedTextMessage") return;
+    const allowedTypes = ['videoMessage', 'documentMessage'];
+    if (!allowedTypes.includes(mtype)) return;
 
     const media = await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage });
     const mimetype = message.message[mtype]?.mimetype;
@@ -246,7 +274,7 @@ FUNC.handle_media = async function (message, self, conn) {
         ext: '.' + ext,
         number: user.number,
         id: message.key.id,
-        custom: { type: getCustomTypeByExtension(ext), fromstatus: false }
+        custom: { type: FUNC.getCustomTypeByExtension(ext), fromstatus: false }
     };
 
     if (caption)
@@ -304,7 +332,11 @@ FUNC.handle_status = async function (message, self, conn) {
     const isgroup = false;
     const user = { chatid, number };
     const group = {};
+    
     const mtype = getContentType(message.message);
+    const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage'];
+    if (!allowedTypes.includes(mtype)) return;
+
     const media = mtype && (await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage }));
 
     if (media) {

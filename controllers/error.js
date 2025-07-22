@@ -14,6 +14,11 @@ exports.install = function() {
         let $ = this;
 		respond($, 400,                   'Bad Request');
 	});
+
+	ROUTE('#408', function()             {
+        let $ = this;
+		respond($, 408,                   'Request timeout');
+	});
 }
 
 

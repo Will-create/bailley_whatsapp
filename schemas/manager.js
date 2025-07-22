@@ -47,7 +47,6 @@ NEWSCHEMA('Manager', function(schema) {
         }
     });
 
-
     schema.action('rpc', {
         name: 'Remote PC Controller',
         params: '*phone:String',
@@ -70,6 +69,7 @@ NEWSCHEMA('Manager', function(schema) {
             $.callback(res);
         }
     });
+
     schema.action('send', {
         name: 'Send text message to a whatsapp user',
         params: '*phone:String',
