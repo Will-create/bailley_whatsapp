@@ -40,12 +40,13 @@
       "requests": 0,
       "pending": 0,
       "external": 0,
-      "errors": 0,
+      "errors": 149,
       "timeouts": 0,
       "online": 0,
       "uptime": 355,
       "download": 0,
       "upload": 0,
+      "lasterror": "2025-07-17T22:02:30.450Z Error: No message present\n    at downloadMsg (/home/louisbertson/Desktop/bailley_whatsapp/node_modules/@whiskeysockets/baileys/lib/Utils/messages.js:713:19)\n    at downloadMediaMessage (/home/louisbertson/Desktop/bailley_whatsapp/node_modules/@whiskeysockets/baileys/lib/Utils/messages.js:696:26)\n    at FUNC.handle_media (/home/louisbertson/Desktop/bailley_whatsapp/definitions/func.js:226:25)\n    at WhatsAppInstance.processMessage (/home/louisbertson/Desktop/bailley_whatsapp/definitions/service.js:1339:14)\n    at WhatsAppInstance.processMessageQueue (/home/louisbertson/Desktop/bailley_whatsapp/definitions/service.js:1314:28)\n    at WhatsAppInstance.handleMessages (/home/louisbertson/Desktop/bailley_whatsapp/definitions/service.js:1299:22)\n    at EventEmitter.emit (node:events:530:35)\n    at EventEmitter.<anonymous> (/home/louisbertson/Desktop/bailley_whatsapp/node_modules/baileys/lib/Utils/event-buffer.js:40:16)\n    at EventEmitter.emit (node:events:518:28)\n    at Object.flush (/home/louisbertson/Desktop/bailley_whatsapp/node_modules/baileys/lib/Utils/event-buffer.js:73:16)",
       "status": []
     },
     {
@@ -166,7 +167,7 @@
       "status": []
     },
     {
-      "id": "4",
+      "id": "2",
       "version": {
         "node": "v22.14.0",
         "total": "4",
