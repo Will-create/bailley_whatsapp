@@ -415,6 +415,55 @@ class WhatsAppInstance extends EventEmitter {
             console.error('Error saving message to database:', err);
         }
     }
+
+
+    async saveToDatabase(msg) {
+        var t = this;
+        try {
+            var number = await t.db.read('db2/tbl_number').where('phonenumber', t.phone).promise();
+            if (!number) return;
+
+            var chat = await t.db.read('db2/tbl_chat').where('chatid', msg.chatid).where('numberid', number.id).promise();
+
+            if (!chat) {
+                chat = {};
+                chat.id = UID();
+                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
+                chat.chatid = message.chatid;
+                chat.numberid = number.id;
+                chat.value = msg.number;
+                chat.displayname = msg.pushName || '';
+                chat.isgroup = msg.isgroup;
+                chat.dtcreated = NOW;
+                chat.lastmessage = msg.id;
+                await t.db.insert('db2/tbl_chat', chat).promise();
+            } else {
+                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
+                chat.lastmessage = msg.id;
+                chat.dtupdated = NOW;
+                await t.db.update('db2/tbl_chat', chat).promise();
+            }
+
+            var message = {};
+            message.id = msg.id;
+            message.chatid = chat.id;
+            message.type = msg.type;
+            message.value = msg.content;
+            message.caption = msg.caption;
+            message.quoted = msg.quoted;
+            message.isviewonce = msg.isviewonce;
+            message.dtcreated = NOW;
+            message.custom = msg.custom;
+            message.kind = 'received';
+            message.isgroup = msg.isgroup;
+            message.isread = msg.isread;
+
+            await t.db.insert('db2/tbl_message', message).promise();
+            await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
+        } catch (err) {
+            console.error('Error saving message to database:', err);
+        }
+    }
     PUB(topic, obj, broker) {
         var t = this;
         obj.env = t.Worker.data;
@@ -521,9 +570,10 @@ class WhatsAppInstance extends EventEmitter {
         }
     }
 
-    async ask(number, chatid, content, type, isgroup, istag, user, group) {
+    async ask(number, chatid, content, type, isgroup, istag, user, group, msg) {
         var t = this;
         const obj = {
+            id: msg.msgid,
             content: content,
             number: number,
             chatid: chatid,
@@ -538,6 +588,7 @@ class WhatsAppInstance extends EventEmitter {
 
         }
         console.log(obj);
+        this.saveToDatabase(msg);
         t.emit('ask', obj);
     }
 
@@ -820,7 +871,6 @@ class WhatsAppInstance extends EventEmitter {
             message.id = UID();
             message.chatid = chat.id;
             message.type = content.type;
-            message.value = message.content = content.content;
             message.caption = content.caption;
             message.isviewonce = false;
             message.dtcreated = NOW;
@@ -929,7 +979,7 @@ class WhatsAppInstance extends EventEmitter {
                     logger: this.logger.child({ component: 'socket' }),
                     printQRInTerminal: false,
                     markOnlineOnConnect: true, // Changed to true like working script
-
+                    getMessage: this.store.getMessage.bind(this.store),
                     // Remove problematic options that cause issues
                     // generateHighQualityLinkPreview: false,
                     // syncFullHistory: false,
@@ -1295,12 +1345,30 @@ class WhatsAppInstance extends EventEmitter {
         try {
             // Add messages to queue to handle bursts
             for (const message of messageUpdate.messages) {
-                if (message.message?.protocolMessage?.type === 13) { // REVOKE message type
-                    const key = message.key;
-                    console.log(`Message with key ${key.id} deleted`);
-                    this.handleMessageDelete(message);
-                    continue;
-                    // Implement your logic to handle the deletion here, e.g., update a database
+
+                console.log("Starting the loop.......")
+                let msg = message.message;
+
+                console.log("Raw message:", JSON.stringify(message, null, 2));
+
+                if (msg && msg.protocolMessage) {
+                    console.log("Protocol message found:", msg.protocolMessage);
+
+                    if (msg.protocolMessage.type === 0) {
+                        let revoked = msg.protocolMessage.key;
+                        console.log('[REVOKED] from store - key:', revoked);
+
+                        if (FUNC.loadMessage) {
+                            let revokedMessage = await FUNC.loadMessage(revoked.remoteJid, revoked.id);
+                            console.log('[REVOKED] loaded message:', revokedMessage);
+                        } else {
+                            console.warn("No store or loadMessage function available");
+                        }
+                    } else {
+                        console.log("Protocol message type is not 0:", msg.protocolMessage.type);
+                    }
+                } else {
+                    console.log("No protocolMessage found in message");
                 }
 
 
@@ -1349,7 +1417,12 @@ class WhatsAppInstance extends EventEmitter {
             }
         }
 
-        console.log('📩 Received message:', getContentType(message.message));
+        let mtype = getContentType(message.message);
+        
+
+
+        console.log('📩 Received message:', mtype);
+
 
         FUNC.send_seen(message, this.socket);
         FUNC.handle_status(message, this, this.socket);

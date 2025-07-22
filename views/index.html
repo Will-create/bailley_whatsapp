@@ -1,0 +1,148 @@
+@{layout('')}
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Redis Explorer</title>
+    <meta charset="utf-8">
+    <style>
+        :root {
+            --font: "Segoe UI", sans-serif;
+            --bg: #f4f4f4;
+            --accent: #0a84ff;
+            --card: #fff;
+            --border: #ddd;
+            --text: #222;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background: var(--bg);
+            font-family: var(--font);
+            font-size: 13px;
+            color: var(--text);
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+        }
+
+        h1 {
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        select, button {
+            font-size: 12px;
+            padding: 4px 6px;
+            margin-right: 5px;
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+            margin-top: 10px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+
+        li {
+            padding: 6px 10px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        li:last-child {
+            border-bottom: none;
+        }
+
+        a {
+            text-decoration: none;
+            color: var(--accent);
+            font-size: 11px;
+        }
+
+        .view-btn {
+            background: none;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        .meta {
+            font-family: monospace;
+            font-size: 11px;
+            color: #666;
+        }
+
+        .topbar {
+            margin-bottom: 10px;
+        }
+
+        .msg-content {
+            white-space: pre-wrap;
+            background: #fff;
+            border: 1px solid #ccc;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow: auto;
+            display: none;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Redis Message Explorer</h1>
+        <div class="topbar">
+            <label for="number">Number:</label>
+            <select id="number"></select>
+            <button onclick="loadMessages()">Load</button>
+        </div>
+        <ul id="messages"></ul>
+
+        <div id="messageContent" class="msg-content"></div>
+    </div>
+    <script>
+        async function fetchJSON(url) {
+            const res = await fetch(url);
+            return res.json();
+        }
+        async function loadNumbers() {
+            const numbers = await fetchJSON('/api/explorer/');
+            const sel = document.getElementById('number');
+            sel.innerHTML = numbers.map(n => `<option value="${n}">${n}</option>`).join('');
+        }
+        async function loadMessages() {
+            const number = document.getElementById('number').value;
+            const messages = await fetchJSON(`/api/explorer/messages/?number=${encodeURIComponent(number)}`);
+            const ul = document.getElementById('messages');
+            const content = document.getElementById('messageContent');
+            content.style.display = 'none';
+            ul.innerHTML = messages.map(msg => `
+                <li>
+                    <div class="meta">${msg.jid}</div>
+                    <button class="view-btn" onclick="viewMessage('${msg.key}')">View</button>
+                </li>
+            `).join('');
+        }
+        async function viewMessage(key) {
+            const data = await fetchJSON(`/api/explorer/view/?key=${encodeURIComponent(key)}`);
+            const box = document.getElementById('messageContent');
+            box.innerText = JSON.stringify(data, null, 2);
+            box.style.display = 'block';
+        }
+        loadNumbers();
+    </script>
+</body>
+</html>
+

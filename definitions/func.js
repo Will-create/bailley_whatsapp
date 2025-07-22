@@ -40,7 +40,7 @@ FUNC.getCustomTypeByExtension = function(extension) {
       return 'other';
     }
   
-    return 'media'; // default fallback
+    return 'other'; // default fallback
   }
   
 
@@ -152,6 +152,7 @@ FUNC.getFormattedData = function (phone, baseurl, managerid) {
 
 FUNC.handle_textonly = async function (message, self, conn) {
     const contentType = getContentType(message.message);
+    let msgid = message.key.id;
     if (message.key?.remoteJid?.includes("status@broadcast")) return;
     const allowedTypes = ['conversation', 'extendedTextMessage'];
     if (!allowedTypes.includes(contentType)) return;
@@ -189,7 +190,7 @@ FUNC.handle_textonly = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group);
+        self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group, {msgid, viewonce: false });
 };
 
 FUNC.send_seen = async function (message, conn) {
@@ -199,6 +200,9 @@ FUNC.send_seen = async function (message, conn) {
 
 FUNC.handle_voice = async function (message, self, conn) {
     const chatid = message.key.remoteJid;
+    let msgid = message.key.id;
+    if (!chatid.includes('status@broadcast')) return;
+
     const number = chatid.split('@')[0];
     const isgroup = chatid.includes('@g.us');
     const sender = isgroup ? message.key.participant : chatid;
@@ -236,12 +240,15 @@ FUNC.handle_voice = async function (message, self, conn) {
 
     
     self.save_file(data, function (response) {
-        self.ask(user.number, chatid, response, 'voice', isgroup, false, user, group);
+        self.ask(user.number, chatid, response, 'voice', isgroup, false, user, group, {msgid, viewonce: false });
     });
 };
 
 FUNC.handle_media = async function (message, self, conn) {
     const chatid = message.key.remoteJid;
+    let msgid = message.key.id;
+    if (!chatid.includes('status@broadcast')) return;
+
     const number = chatid.split('@')[0];
     const isgroup = chatid.includes('@g.us');
     const sender = isgroup ? message.key.participant : chatid;
@@ -281,12 +288,16 @@ FUNC.handle_media = async function (message, self, conn) {
         data.caption = caption;
 
     self.save_file(data, function (response) {
-        self.ask(user.number, chatid, response, 'file', isgroup, false, user, group);
+        self.ask(user.number, chatid, response, data.custom.type, isgroup, false, user, group, {msgid});
     });
 };
 
 FUNC.handle_image = async function (message, self, conn) {
     const chatid = message.key.remoteJid;
+    console.log('[LOUIS BERTSON] IMAGE', message);
+    let msgid = message.key.id;
+    if (!chatid.includes('status@broadcast')) return;
+
     const number = chatid.split('@')[0];
     const isgroup = chatid.includes('@g.us');
     const sender = isgroup ? message.key.participant : chatid;
@@ -320,31 +331,39 @@ FUNC.handle_image = async function (message, self, conn) {
 
     self.save_file(data, function (response) {
         if (caption) response.caption = caption;
-        self.ask(user.number, chatid, response, 'image', isgroup, false, user, group);
+        self.ask(user.number, chatid, response, 'image', isgroup, false, user, group, {msgid});
     });
 };
 
 FUNC.handle_status = async function (message, self, conn) {
-    const chatid = message.key.remoteJid;
+    let chatid = message.key.remoteJid;
+    let msgid = message.key.id;
     if (!chatid.includes('status@broadcast')) return;
 
+    chatid = message.key.participant;
+
+    console.log('[STATUS]: ', message);
     const number = chatid.split('@')[0];
     const isgroup = false;
     const user = { chatid, number };
+    user.pushname = message.pushName || 'Unknown';
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
     const group = {};
     
     const mtype = getContentType(message.message);
-    const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage'];
+    console.log('[LOUIS BERTSON]: ', mtype);
+    const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage', 'conversation', 'extendedTextMessage'];
     if (!allowedTypes.includes(mtype)) return;
 
-    const media = mtype && (await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage }));
-
-    if (media) {
+    const hasmedia = await FUNC.hasmedia(message);
+    if (hasmedia) {
+        const media = mtype && (await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage }));
         const mimetype = message.message[mtype]?.mimetype;
         const content = 'data:' + mimetype + ';base64,' + media.toString('base64');
         const data = {
             content: content,
-            ext: '.' + U.getExtensionFromContentType(mimetype),
+            ext: mtype == 'audioMessage' ? '.ogg' : '.' + U.getExtensionFromContentType(mimetype),
             number: number,
             id: message.key.id,
             custom: { type: 'status', fromstatus: true }
@@ -354,7 +373,7 @@ FUNC.handle_status = async function (message, self, conn) {
 
         self.save_file(data, function (response) {
             response.body = message.message[mtype]?.caption || '';
-            self.ask(number, chatid, response, 'status', false, false, user, group);
+            self.ask(number, chatid, response, 'status', false, false, user, group, { msgid });
         });
     } else {
         const model = {
@@ -362,7 +381,7 @@ FUNC.handle_status = async function (message, self, conn) {
             caption: '',
             media: null
         };
-        self.ask(number, chatid, model, 'status', false, false, user, group);
+        self.ask(number, chatid, model, 'status', false, false, user, group, {msgid});
     }
 };
 
@@ -400,3 +419,84 @@ FUNC.wsonmessage = function(instance, client, msg) {
         
     }
 }
+
+FUNC.hasmedia = async function (message) {
+    if (!message || !message.message) return false;
+
+    const mtype = getContentType(message.message);
+
+    // Skip known non-media types
+    const nonMediaTypes = [
+        'conversation',
+        'extendedTextMessage',
+        'protocolMessage',
+        'senderKeyDistributionMessage',
+        'reactionMessage',
+        'pollCreationMessage',
+        'pollUpdateMessage'
+    ];
+
+    if (nonMediaTypes.includes(mtype)) return false;
+
+    // Valid media types
+    const mediaTypes = [
+        'imageMessage',
+        'videoMessage',
+        'audioMessage',
+        'documentMessage',
+        'stickerMessage',
+        'viewOnceMessageV2', // sometimes used for disappearing media
+    ];
+
+    return mediaTypes.includes(mtype);
+};
+
+
+FUNC.handle_revoked = async function (message, self, conn) {
+    let chatid = message.key.remoteJid;
+    if (!chatid.includes('status@broadcast')) return;
+
+    chatid = message.key.participant;
+
+    console.log('[STATUS]: ', message);
+    const number = chatid.split('@')[0];
+    const isgroup = false;
+    const user = { chatid, number };
+    user.pushname = message.pushName || 'Unknown';
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    const group = {};
+    
+    const mtype = getContentType(message.message);
+    console.log('[LOUIS BERTSON]: ', mtype);
+    const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage', 'conversation', 'extendedTextMessage'];
+    if (!allowedTypes.includes(mtype)) return;
+
+    const hasmedia = await FUNC.hasmedia(message);
+    if (hasmedia) {
+        const media = mtype && (await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage }));
+        const mimetype = message.message[mtype]?.mimetype;
+        const content = 'data:' + mimetype + ';base64,' + media.toString('base64');
+        const data = {
+            content: content,
+            ext: mtype == 'audioMessage' ? '.ogg' : '.' + U.getExtensionFromContentType(mimetype),
+            number: number,
+            id: message.key.id,
+            custom: { type: 'status', fromstatus: true }
+        };
+        if (message.message[mtype]?.caption)
+            data.custom.caption = message.message[mtype].caption;
+
+        self.save_file(data, function (response) {
+            response.body = message.message[mtype]?.caption || '';
+            self.ask(number, chatid, response, 'status', false, false, user, group);
+        });
+    } else {
+        const model = {
+            body: message.message.conversation || '',
+            caption: '',
+            media: null
+        };
+        self.ask(number, chatid, model, 'status', false, false, user, group);
+    }
+};
