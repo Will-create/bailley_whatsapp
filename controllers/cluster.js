@@ -135,14 +135,8 @@ exports.install = function () {
                 }
         
                 if (msg?.type) {
-                    switch (msg.type) {
-                        case 'text':
-                            if (instance && instance.state === 'open') instance.send_message(msg);
-                            break;
-                        case 'file':
-                            if (instance && instance.state === 'open') instance.send_file(msg);
-                            break;
-                    }
+                    if (instance && instance.state === 'open') instance.wrapper.dispatch(msg);
+
         
                     client.send({
                         success: (instance && instance.state === 'open') || false,

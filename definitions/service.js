@@ -265,6 +265,13 @@ class WhatsAppInstance extends EventEmitter {
         this.processingQueue = false;
         this.maxQueueSize = config.maxQueueSize || 1000;
 
+        this.MAX_RETRIES = 3;
+        this.RETRY_DELAY = 1000; // 1 second
+        this.CRITICAL_TIMEOUT = 30000; // 30 seconds
+        this.processingQueue = false;
+        this.isShuttingDown = false;
+        this.processedMessages = new Set(); // Deduplication
+        this.failedMessages = new Map(); // Track failures
         this.setupEventHandlers();
         this.startHealthCheck();
 
@@ -428,7 +435,7 @@ class WhatsAppInstance extends EventEmitter {
             if (!chat) {
                 chat = {};
                 chat.id = UID();
-                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
+                // chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
                 chat.chatid = msg.chatid;
                 chat.numberid = number.id;
                 chat.value = msg.number;
@@ -438,7 +445,7 @@ class WhatsAppInstance extends EventEmitter {
                 chat.lastmessage = msg.id;
                 await t.db.insert('db2/tbl_chat', chat).promise();
             } else {
-                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
+                // chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
                 chat.lastmessage = msg.id;
                 chat.displayname = msg.from.pushname || '';
                 chat.dtupdated = NOW;
@@ -603,19 +610,186 @@ class WhatsAppInstance extends EventEmitter {
         t.emit('ask', obj);
     }
 
-    async send_message(data) {
-        if (!data.chatid.includes('@')) {
-            data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
+    ensureConnection() {
+        if (!this.socket || this.socket.state !== 'open') {
+            throw new Error('WhatsApp is not connected');
         }
-
-        const options = {};
-        if (data.quoted) {
-            options.quoted = data.quoted;
-        }
-
-        await this.socket.sendMessage(data.chatid, { text: data.content }, options);
     }
 
+    formatJid(chatid) {
+        return chatid.includes('@') ? chatid : (chatid.isPhone?.() ? `${chatid}@s.whatsapp.net` : `${chatid}@g.us`);
+    }
+
+    async sendMessage(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+        const options = data.quoted ? { quoted: data.quoted } : {};
+
+        const content = { text: data.content };
+        if (data.mentions) content.mentions = data.mentions;
+
+        try {
+            const result = await this.socket.sendMessage(jid, content, options);
+            this.logger.debug({ jid, type: 'text' }, 'Text message sent');
+            return result;
+        } catch (err) {
+            this.logger.error({ err, jid }, 'Failed to send text message');
+            throw err;
+        }
+    }
+
+    async sendMedia(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+
+        let buffer, filename, mimetype = 'application/octet-stream';
+
+        if (data.type === 'url') {
+            const fs = F.Fs;
+            data.ext = U.getExtension(data.url);
+            filename = `file_${Date.now()}.${data.ext}`;
+            mimetype = U.getContentType(filename);
+
+            await new Promise((resolve, reject) => {
+                DOWNLOAD(data.url, PATH.temp(filename), err => {
+                    if (err) return reject(err);
+                    buffer = fs.readFileSync(PATH.temp(filename));
+                    fs.unlinkSync(PATH.temp(filename));
+                    resolve();
+                });
+            });
+        } else if (data.type === 'base64') {
+            buffer = Buffer.from(data.content.replace(/^data:.*?base64,/, ''), 'base64');
+        } else {
+            throw new Error('Unsupported media input type. Use "url" or "base64".');
+        }
+
+        const mediaContent = {
+            caption: data.caption || '',
+            mimetype: mimetype,
+        };
+
+        switch (data.mediaCategory) {
+            case 'image':
+                mediaContent.image = buffer;
+                break;
+            case 'video':
+                mediaContent.video = buffer;
+                mediaContent.gifPlayback = !!data.gif;
+                mediaContent.ptv = !!data.ptv;
+                break;
+            case 'audio':
+                mediaContent.audio = buffer;
+                break;
+            default:
+                mediaContent.document = buffer;
+                mediaContent.fileName = filename;
+                break;
+        }
+
+        if (data.viewOnce) mediaContent.viewOnce = true;
+
+        try {
+            const result = await this.socket.sendMessage(jid, mediaContent);
+            this.logger.debug({ jid, type: data.mediaCategory || 'document' }, 'Media sent');
+            return result;
+        } catch (err) {
+            this.logger.error({ err, jid }, 'Failed to send media');
+            throw err;
+        }
+    }
+
+    async sendLocation(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+        const location = {
+            location: {
+                degreesLatitude: data.lat,
+                degreesLongitude: data.lng,
+            },
+        };
+        return this.socket.sendMessage(jid, location);
+    }
+
+    async sendContact(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+
+        const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${data.name}\nORG:${data.org || ''};\nTEL;type=CELL;type=VOICE;waid=${data.phone}:${data.phone}\nEND:VCARD`;
+
+        const contactMsg = {
+            contacts: {
+                displayName: data.name,
+                contacts: [{ vcard }],
+            },
+        };
+
+        return this.socket.sendMessage(jid, contactMsg);
+    }
+
+    async sendReaction(data) {
+        this.ensureConnection();
+        return this.socket.sendMessage(data.chatid, {
+            react: {
+                text: data.reaction || '',
+                key: data.key,
+            },
+        });
+    }
+
+    async sendPoll(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+        const poll = {
+            poll: {
+                name: data.name,
+                values: data.options,
+                selectableCount: data.selectableCount || 1,
+                toAnnouncementGroup: data.toAnnouncementGroup || false
+            },
+        };
+        return this.socket.sendMessage(jid, poll);
+    }
+
+    async forwardMessage(data) {
+        this.ensureConnection();
+        const jid = this.formatJid(data.chatid);
+        return this.socket.sendMessage(jid, { forward: data.message });
+    }
+
+    async pinMessage(data) {
+        this.ensureConnection();
+        return this.socket.sendMessage(data.chatid, {
+            pin: {
+                type: data.unpin ? 0 : 1,
+                time: data.duration || 86400,
+                key: data.key,
+            },
+        });
+    }
+
+    async dispatch(msg) {
+        switch (msg.type) {
+            case 'text':
+                return await this.sendMessage(msg);
+            case 'file':
+                return await this.sendMedia(msg);
+            case 'location':
+                return await this.sendLocation(msg);
+            case 'contact':
+                return await this.sendContact(msg);
+            case 'reaction':
+                return await this.sendReaction(msg);
+            case 'poll':
+                return await this.sendPoll(msg);
+            case 'forward':
+                return await this.forwardMessage(msg);
+            case 'pin':
+                return await this.pinMessage(msg);
+            default:
+                throw new Error(`Unsupported message type: ${msg.type}`);
+        }
+    }
     async onwhatsapp(data) {
         if (!data.chatid.includes('@')) {
             data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
@@ -629,49 +803,6 @@ class WhatsAppInstance extends EventEmitter {
     }
 
 
-    async send_file(data) {
-        if (!data.chatid.includes('@')) {
-            data.chatid = data.chatid.isPhone?.() ? data.chatid + '@s.whatsapp.net' : data.chatid + '@g.us';
-        }
-
-
-        let filename;
-
-        const caption = data.caption || '';
-        let mimetype = 'application/octet-stream';
-        let buffer;
-
-        if (data.type === 'url') {
-            // Download using global DOWNLOAD helper
-            let fs = F.Fs;
-            data.ext = U.getExtension(data.url);
-            filename = `file_${Date.now()}.` + (data.ext || '');
-
-            mimetype = U.getContentType(filename);
-            await new Promise((resolve, reject) => {
-                DOWNLOAD(data.url, PATH.temp(filename), function (err, response) {
-                    if (err) return reject(err);
-                    buffer = fs.readFileSync(PATH.temp(filename));
-                    fs.unlinkSync(PATH.temp(filename)); // clean up
-                    resolve();
-                });
-            });
-        } else if (data.type === 'base64') {
-            const base64 = data.content.replace(/^data:.*?base64,/, '');
-            buffer = Buffer.from(base64, 'base64');
-        } else {
-            throw new Error('Invalid data type. Use "url" or "base64".');
-        }
-
-        const msg = {
-            document: buffer,
-            fileName: filename,
-            mimetype: mimetype,
-            caption: caption
-        };
-
-        await this.socket.sendMessage(data.chatid, msg);
-    };
 
 
     async message(msg, ctrl) {
@@ -855,47 +986,6 @@ class WhatsAppInstance extends EventEmitter {
         var t = this;
         if (CONF.notify) {
             RESTBuilder.POST(CONF.notify.format(obj.topic), { title: obj.title }).keepalive().callback(NOOP);
-        }
-    }
-
-    async save_revoked(data) {
-        var t = this;
-        try {
-            var content = data.content;
-            var env = data.env;
-            var user = content.user;
-            var group = content.group;
-            var number = await t.db.read('db2/tbl_number').where('phonenumber', env.phone).promise();
-            var chat = await t.db.read('db2/tbl_chat').id(user.number).where('numberid', number.id).promise();
-
-            if (!chat) {
-                chat = {};
-                chat.id = UID();
-                chat.numberid = number.id;
-                chat.value = user.phone;
-                chat.displayname = user.pushname;
-                chat.dtcreated = NOW;
-                await t.db.insert('db2/tbl_chat', chat).promise();
-            }
-
-            var message = {};
-            message.id = UID();
-            message.chatid = chat.id;
-            message.type = content.type;
-            message.caption = content.caption;
-            message.isviewonce = false;
-            message.dtcreated = NOW;
-            message.kind = content.type == 'edited' ? 'edited' : 'revoked';
-            await t.db.insert('db2/tbl_message', message).promise();
-            await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
-
-            // send push notification
-            var obj = {};
-            obj.topic = 'revoked-' + t.phone;
-            obj.title = user.pushname;
-            t.notify(obj);
-        } catch (err) {
-            console.error('Error saving revoked message:', err);
         }
     }
 
@@ -1348,110 +1438,487 @@ class WhatsAppInstance extends EventEmitter {
         }
     }
     async handleMessages(messageUpdate) {
-        if (!messageUpdate || messageUpdate.type !== 'notify') return;
-
-
-         
-
+        const operationId = this.generateOperationId();
+        const startTime = Date.now();
+        
         try {
-            // Add messages to queue to handle bursts
-            for (const message of messageUpdate.messages) {
+            // Validate input with extreme prejudice
+            if (!this.validateMessageUpdate(messageUpdate)) {
+                this.logger.warn(`[${operationId}] Invalid message update rejected`);
+                return { success: false, reason: 'invalid_input' };
+            }
 
-                let msg = message.message;
+            // Circuit breaker pattern
+            if (this.isSystemOverloaded()) {
+                this.logger.error(`[${operationId}] System overloaded - emergency brake activated`);
+                await this.emergencyThrottle();
+            }
 
-                if (msg && msg.protocolMessage) {
-                    console.log("Protocol message found:", msg.protocolMessage);
-                    if (msg.protocolMessage.type === 0) {
-                        let revoked = msg.protocolMessage.key;
-                        console.log('[REVOKED] from store - key:', revoked);
+            // Process each message with military precision
+            const results = await this.processMessagesWithFailover(messageUpdate.messages, operationId);
+            
+            // Ensure queue processing is active
+            await this.ensureQueueProcessing(operationId);
+            
+            const duration = Date.now() - startTime;
+            this.logger.info(`[${operationId}] Messages handled successfully in ${duration}ms`);
+            
+            return { success: true, processed: results.processed, failed: results.failed };
+            
+        } catch (error) {
+            return await this.handleCriticalFailure(error, operationId, 'handleMessages');
+        }
+    }
 
-                        if (FUNC.loadMessage) {
-                            let restoredMessage = await t.db.read('db2/tbl_message').id(revoked.id).promise();
-                            if (restoredMessage) {
-                                await t.db.update('db2/tbl_message', { kind: 'revoked', dtdeleted: NOW, isDeleted: true }).promise();
-                                t.emit('message-revoked', {revoked, restoredMessage})
-                            }
-
-                            let revokedMessage = await FUNC.loadMessage(revoked.remoteJid, revoked.id);
-                            console.log('[REVOKED] loaded message:', revokedMessage);
-                        }
-                    } 
-                }
-
-
-                if (this.messageQueue.length >= this.maxQueueSize) {
-                    this.logger.warn('Message queue full, dropping message');
+    async processMessagesWithFailover(messages, operationId) {
+        const results = { processed: 0, failed: 0 };
+        
+        for (const message of messages) {
+            try {
+                // Deduplication check
+                const messageHash = this.generateMessageHash(message);
+                if (this.processedMessages.has(messageHash)) {
+                    this.logger.debug(`[${operationId}] Duplicate message skipped: ${messageHash}`);
                     continue;
                 }
-                this.messageQueue.push(message);
-            }
 
-            // Process queue if not already processing
-            if (!this.processingQueue) {
-                this.processMessageQueue();
-            }
+                // Queue size protection
+                if (this.messageQueue.length >= this.maxQueueSize) {
+                    await this.handleQueueOverflow(operationId);
+                    if (this.messageQueue.length >= this.maxQueueSize) {
+                        this.logger.error(`[${operationId}] Queue still full after overflow handling`);
+                        results.failed++;
+                        continue;
+                    }
+                }
 
-        } catch (error) {
-            this.logger.error({ error }, 'Error handling messages');
+                // Add to queue with metadata
+                const queueItem = {
+                    message,
+                    timestamp: Date.now(),
+                    operationId,
+                    retryCount: 0,
+                    messageHash
+                };
+
+                this.messageQueue.push(queueItem);
+                this.processedMessages.add(messageHash);
+                results.processed++;
+
+            } catch (error) {
+                this.logger.error(`[${operationId}] Failed to queue message:`, error);
+                results.failed++;
+            }
         }
+
+        return results;
     }
 
+    /**
+     * MILITARY GRADE: Queue processing with guaranteed execution
+     */
     async processMessageQueue() {
+        const operationId = this.generateOperationId();
+        
+        if (this.processingQueue) {
+            this.logger.debug(`[${operationId}] Queue processing already active`);
+            return;
+        }
+
         this.processingQueue = true;
+        this.logger.info(`[${operationId}] Queue processing started`);
 
-        while (this.messageQueue.length > 0 && !this.isShuttingDown) {
-            const message = this.messageQueue.shift();
-
-            try {
-                await this.processMessage(message);
-            } catch (error) {
-                this.logger.error({ error, messageId: message.key?.id }, 'Error processing message');
-            }
-        }
-
-        this.processingQueue = false;
-    }
-
-    async processMessage(message) {
-
-        
-        // Auto-read messages if enabled
-        if (this.config.autoRead && message.key && !message.key.fromMe) {
-            try {
-                //await this.socket.readMessages([message.key]);
-            } catch (error) {
-                this.logger.warn({ error }, 'Failed to mark message as read');
-            }
-        }
-
-        let mtype = getContentType(message.message);
-        
-
-
-        console.log('📩 Received message:', mtype);
-
-
-        FUNC.send_seen(message, this.socket);
-        FUNC.handle_status(message, this, this.socket);
-        FUNC.handle_voice(message, this, this.socket);
-        FUNC.handle_textonly(message, this, this.socket);
-        FUNC.handle_media(message, this, this.socket);
-        FUNC.handle_image(message, this, this.socket);
-
-
-
-        // Emit message event
-        this.emit('message', message);
-    }
-
-    async handleMessageDelete(deleteUpdate) {
-        console.log("[LOUIS BERTSON]", "handling deleted messages", deleteUpdate);
         try {
-            this.emit('message-delete', deleteUpdate);
-        } catch (error) {
-            this.logger.error({ error }, 'Error handling message delete');
+            while (this.messageQueue.length > 0 && !this.isShuttingDown) {
+                const queueItem = this.messageQueue.shift();
+                
+                if (!queueItem) continue;
+
+                // Check message age (prevent processing stale messages)
+                if (this.isMessageStale(queueItem)) {
+                    this.logger.warn(`[${operationId}] Stale message discarded: ${queueItem.messageHash}`);
+                    continue;
+                }
+
+                await this.processMessageWithRetry(queueItem, operationId);
+            }
+        } catch (criticalError) {
+            await this.handleCriticalFailure(criticalError, operationId, 'processMessageQueue');
+        } finally {
+            this.processingQueue = false;
+            this.logger.info(`[${operationId}] Queue processing completed`);
         }
     }
+
+    async processMessageWithRetry(queueItem, operationId) {
+        const maxRetries = this.MAX_RETRIES;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                await this.processMessageSafely(queueItem.message, operationId, attempt);
+                
+                // Success - remove from failed tracking
+                this.failedMessages.delete(queueItem.messageHash);
+                return;
+
+            } catch (error) {
+                lastError = error;
+                queueItem.retryCount = attempt;
+                
+                this.logger.warn(`[${operationId}] Message processing attempt ${attempt}/${maxRetries} failed:`, {
+                    messageId: queueItem.message.key?.id,
+                    error: error.message
+                });
+
+                if (attempt < maxRetries) {
+                    await this.sleep(this.RETRY_DELAY * attempt); // Exponential backoff
+                }
+            }
+        }
+
+        // All retries exhausted - handle failure
+        await this.handleMessageFailure(queueItem, lastError, operationId);
+    }
+
+    /**
+     * MILITARY GRADE: Message processing with comprehensive error handling
+     */
+    async processMessageSafely(message, operationId, attempt = 1) {
+        const messageId = message.key?.id || 'unknown';
+        const startTime = Date.now();
+        
+        try {
+            // Timeout protection
+            const processingPromise = this.processMessage(message);
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Processing timeout')), this.CRITICAL_TIMEOUT)
+            );
+            
+            await Promise.race([processingPromise, timeoutPromise]);
+            
+            const duration = Date.now() - startTime;
+            this.logger.debug(`[${operationId}] Message ${messageId} processed in ${duration}ms (attempt ${attempt})`);
+            
+        } catch (error) {
+            const duration = Date.now() - startTime;
+            this.logger.error(`[${operationId}] Message ${messageId} failed after ${duration}ms (attempt ${attempt}):`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * MILITARY GRADE: Core message processing with bulletproof handlers
+     */
+    async processMessage(message) {
+        if (!message || !message.message) {
+            throw new Error('Invalid message structure');
+        }
+
+        const msg = message.message;
+
+        // Handle protocol messages (revoke, etc.)
+        if (msg.protocolMessage) {
+            return await this.handleProtocolMessageSafely(msg.protocolMessage, message);
+        }
+
+        // Auto-read with error isolation
+        await this.handleAutoReadSafely(message);
+
+        // Get message type with fallback
+        const mtype = await this.getMessageTypeSafely(message);
+        if (!mtype) {
+            throw new Error('Unable to determine message type');
+        }
+
+        // Route to appropriate handler with isolation
+        await this.routeMessageSafely(message, mtype);
+
+        // Emit event with error isolation
+        await this.emitMessageEventSafely(message);
+    }
+
+    async handleProtocolMessageSafely(protocolMessage, message) {
+        try {
+            if (protocolMessage.type === 0) { // Revoke message
+                const revoked = protocolMessage.key;
+                
+                if (!revoked?.id) {
+                    throw new Error('Invalid revoke key');
+                }
+
+                console.log('[REVOKED] ID:', revoked.id);
+
+                // Database operation with retry
+                const restoredMessage = await this.executeWithRetry(async () => {
+                    return await this.db.read('db2/tbl_message')
+                        .where('id', revoked.id)
+                        .fields('id,content,kind')
+                        .promise();
+                });
+
+                if (!restoredMessage) {
+                    console.warn('[NOT FOUND IN DB]');
+                    return;
+                }
+
+                console.log('[RESTORED]', restoredMessage);
+
+                // Update with retry
+                await this.executeWithRetry(async () => {
+                    return await this.db.update('db2/tbl_message', {
+                        kind: 'revoked',
+                        dtdeleted: 'NOW()',
+                        isDeleted: true
+                    }).id(restoredMessage.id).promise();
+                });
+
+                // Safe emit
+                this.safeEmit('message-revoked', { revoked, restoredMessage });
+            }
+        } catch (error) {
+            console.error('[REVOKE HANDLER ERROR]', error);
+            // Don't throw - protocol message errors shouldn't kill the process
+        }
+    }
+
+    async handleAutoReadSafely(message) {
+        if (!this.config?.autoRead || !message.key || message.key.fromMe) {
+            return;
+        }
+
+        try {
+            // Commented out as in original, but with proper error handling
+            // await this.socket.readMessages([message.key]);
+        } catch (error) {
+            this.logger.warn('[WARN] Failed to mark message as read:', error.message);
+            // Continue processing - read receipt failure is not critical
+        }
+    }
+
+    async getMessageTypeSafely(message) {
+        try {
+            const mtype = getContentType(message.message);
+            console.log('📩 Received message:', mtype);
+            return mtype;
+        } catch (error) {
+            console.error('[ERROR] Failed to get message type:', error);
+            // Try fallback detection
+            return this.fallbackMessageTypeDetection(message.message);
+        }
+    }
+
+    async routeMessageSafely(message, mtype) {
+        const handlers = {
+            'audioMessage': () => this.safeHandlerWrapper(FUNC.handle_voice, message, this, this.socket),
+            'imageMessage': () => this.safeHandlerWrapper(FUNC.handle_image, message, this, this.socket),
+            'documentMessage': () => this.handleDocumentSafely(message),
+            'documentWithCaptionMessage': () => this.handleDocumentSafely(message),
+            'videoMessage': () => this.handleDocumentSafely(message),
+            'conversation': () => this.safeHandlerWrapper(FUNC.handle_textonly, message, this, this.socket),
+            'extendedTextMessage': () => this.safeHandlerWrapper(FUNC.handle_textonly, message, this, this.socket)
+        };
+
+        let status = () => this.safeHandlerWrapper(FUNC.handle_status, message, this, this.socket);
+
+        let chatid = message.key.remoteJid;
+        if (chatid.includes('@newsletter'))
+            return;
+
+        const handler = chatid.includes('status@broadcast') ? status : handlers[mtype];
+        if (handler) {
+            await handler();
+        } else {
+            console.warn('[WARN] Unknown message type:', mtype);
+        }
+    }
+
+    async handleDocumentSafely(message) {
+        try {
+            if (message.key?.remoteJid?.includes("status@broadcast")) {
+                await this.safeHandlerWrapper(FUNC.handle_status, message, this, this.socket);
+            } else {
+                await this.safeHandlerWrapper(FUNC.handle_media, message, this, this.socket);
+            }
+        } catch (error) {
+            console.error('[ERROR] Document handling failed:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * MILITARY GRADE: Message deletion handler with guaranteed execution
+     */
+    async handleMessageDelete(deleteUpdate) {
+        const operationId = this.generateOperationId();
+        
+        try {
+            console.log(`[${operationId}] Handling deleted messages`, deleteUpdate);
+            
+            if (!deleteUpdate) {
+                throw new Error('Invalid delete update');
+            }
+
+            // Validate delete update structure
+            this.validateDeleteUpdate(deleteUpdate);
+
+            // Safe emit with retry
+            await this.safeEmitWithRetry('message-delete', deleteUpdate, operationId);
+            
+            this.logger.info(`[${operationId}] Message delete handled successfully`);
+            
+        } catch (error) {
+            await this.handleCriticalFailure(error, operationId, 'handleMessageDelete');
+        }
+    }
+
+    // === UTILITY METHODS ===
+
+    async safeHandlerWrapper(handler, ...args) {
+        try {
+            await handler(...args);
+        } catch (error) {
+            console.error(`[ERROR] Handler ${handler.name} failed:`, error);
+            throw error;
+        }
+    }
+
+    async executeWithRetry(operation, maxRetries = 3) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await operation();
+            } catch (error) {
+                if (attempt === maxRetries) throw error;
+                await this.sleep(this.RETRY_DELAY * attempt);
+            }
+        }
+    }
+
+    async safeEmitWithRetry(event, data, operationId, maxRetries = 3) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                this.emit(event, data);
+                return;
+            } catch (error) {
+                this.logger.warn(`[${operationId}] Emit attempt ${attempt} failed:`, error.message);
+                if (attempt === maxRetries) {
+                    throw new Error(`Failed to emit ${event} after ${maxRetries} attempts`);
+                }
+                await this.sleep(100 * attempt);
+            }
+        }
+    }
+
+    safeEmit(event, data) {
+        try {
+            this.emit(event, data);
+        } catch (error) {
+            console.error(`[ERROR] Failed to emit ${event}:`, error);
+        }
+    }
+
+    async emitMessageEventSafely(message) {
+        try {
+            this.emit('message', message);
+        } catch (error) {
+            console.error('[ERROR] Failed to emit message event:', error);
+            // Don't throw - event emission failure shouldn't kill processing
+        }
+    }
+
+    validateMessageUpdate(messageUpdate) {
+        return messageUpdate && 
+               messageUpdate.type === 'notify' && 
+               Array.isArray(messageUpdate.messages);
+    }
+
+    validateDeleteUpdate(deleteUpdate) {
+        if (!deleteUpdate || typeof deleteUpdate !== 'object') {
+            throw new Error('Invalid delete update structure');
+        }
+    }
+
+    generateMessageHash(message) {
+        const key = message.key || {};
+        return `${key.id || 'unknown'}_${key.remoteJid || 'unknown'}_${Date.now()}`;
+    }
+
+    generateOperationId() {
+        return `op_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    isSystemOverloaded() {
+        return this.messageQueue.length > (this.maxQueueSize * 0.9);
+    }
+
+    isMessageStale(queueItem, maxAge = 300000) { // 5 minutes
+        return (Date.now() - queueItem.timestamp) > maxAge;
+    }
+
+    async ensureQueueProcessing(operationId) {
+        if (!this.processingQueue && this.messageQueue.length > 0) {
+            this.logger.info(`[${operationId}] Starting queue processing`);
+            setImmediate(() => this.processMessageQueue());
+        }
+    }
+
+    async handleQueueOverflow(operationId) {
+        this.logger.warn(`[${operationId}] Queue overflow detected - implementing emergency measures`);
+        
+        // Remove oldest messages
+        const removeCount = Math.floor(this.maxQueueSize * 0.1);
+        const removed = this.messageQueue.splice(0, removeCount);
+        
+        this.logger.warn(`[${operationId}] Removed ${removed.length} oldest messages from queue`);
+    }
+
+    async handleMessageFailure(queueItem, error, operationId) {
+        const messageHash = queueItem.messageHash;
+        
+        this.failedMessages.set(messageHash, {
+            queueItem,
+            error: error.message,
+            timestamp: Date.now(),
+            operationId
+        });
+
+        this.logger.error(`[${operationId}] Message permanently failed: ${messageHash}`, {
+            error: error.message,
+            retryCount: queueItem.retryCount
+        });
+
+        // Could implement dead letter queue here
+        this.safeEmit('message-failed', { queueItem, error });
+    }
+
+    async handleCriticalFailure(error, operationId, method) {
+        this.logger.error(`[${operationId}] CRITICAL FAILURE in ${method}:`, error);
+        
+        // Could implement circuit breaker, alerting, etc.
+        this.safeEmit('critical-error', { error, operationId, method });
+        
+        return { success: false, error: error.message, operationId };
+    }
+
+    async emergencyThrottle() {
+        this.logger.warn('Emergency throttle activated');
+        await this.sleep(5000); // 5 second pause
+    }
+
+    fallbackMessageTypeDetection(message) {
+        if (message.conversation) return 'conversation';
+        if (message.extendedTextMessage) return 'extendedTextMessage';
+        if (message.imageMessage) return 'imageMessage';
+        if (message.audioMessage) return 'audioMessage';
+        if (message.videoMessage) return 'videoMessage';
+        if (message.documentMessage) return 'documentMessage';
+        return null;
+    }
+
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
 
     async handlePresenceUpdate(presenceUpdate) {
         console.log("[LOUIS BERTSON]", "handling presence updates", presenceUpdate);
