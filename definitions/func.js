@@ -238,7 +238,7 @@ FUNC.handle_voice = async function (message, self, conn) {
         custom: { type: 'voice' }
     };
 
-    
+        console.log('SAVING');
     self.save_file(data, function (response) {
         self.ask(user.number, chatid, response, 'voice', isgroup, false, user, group, {msgid, viewonce: false });
     });
@@ -286,7 +286,7 @@ FUNC.handle_media = async function (message, self, conn) {
 
     if (caption)
         data.caption = caption;
-
+    console.log('SAVING');
     self.save_file(data, function (response) {
         self.ask(user.number, chatid, response, data.custom.type, isgroup, false, user, group, {msgid});
     });
@@ -294,7 +294,6 @@ FUNC.handle_media = async function (message, self, conn) {
 
 FUNC.handle_image = async function (message, self, conn) {
     const chatid = message.key.remoteJid;
-    console.log('[LOUIS BERTSON] IMAGE', message);
     let msgid = message.key.id;
     if (!chatid.includes('status@broadcast')) return;
 
@@ -328,7 +327,7 @@ FUNC.handle_image = async function (message, self, conn) {
         id: message.key.id,
         custom: { type: 'image', fromstatus: false, caption: caption }
     };
-
+    console.log('SAVING');
     self.save_file(data, function (response) {
         if (caption) response.caption = caption;
         self.ask(user.number, chatid, response, 'image', isgroup, false, user, group, {msgid});
@@ -342,7 +341,6 @@ FUNC.handle_status = async function (message, self, conn) {
 
     chatid = message.key.participant;
 
-    console.log('[STATUS]: ', message);
     const number = chatid.split('@')[0];
     const isgroup = false;
     const user = { chatid, number };
@@ -352,7 +350,6 @@ FUNC.handle_status = async function (message, self, conn) {
     const group = {};
     
     const mtype = getContentType(message.message);
-    console.log('[LOUIS BERTSON]: ', mtype);
     const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage', 'conversation', 'extendedTextMessage'];
     if (!allowedTypes.includes(mtype)) return;
 
@@ -370,7 +367,7 @@ FUNC.handle_status = async function (message, self, conn) {
         };
         if (message.message[mtype]?.caption)
             data.custom.caption = message.message[mtype].caption;
-
+        console.log('SAVING');
         self.save_file(data, function (response) {
             response.body = message.message[mtype]?.caption || '';
             self.ask(number, chatid, response, 'status', false, false, user, group, { msgid });
@@ -455,7 +452,9 @@ FUNC.hasmedia = async function (message) {
 FUNC.handle_revoked = async function (message, self, conn) {
     let chatid = message.key.remoteJid;
     if (!chatid.includes('status@broadcast')) return;
+    if (!chatid.includes('@newsletter')) return;
 
+    
     chatid = message.key.participant;
 
     console.log('[STATUS]: ', message);
@@ -486,7 +485,7 @@ FUNC.handle_revoked = async function (message, self, conn) {
         };
         if (message.message[mtype]?.caption)
             data.custom.caption = message.message[mtype].caption;
-
+        console.log('SAVING');
         self.save_file(data, function (response) {
             response.body = message.message[mtype]?.caption || '';
             self.ask(number, chatid, response, 'status', false, false, user, group);

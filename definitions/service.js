@@ -429,10 +429,10 @@ class WhatsAppInstance extends EventEmitter {
                 chat = {};
                 chat.id = UID();
                 chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
-                chat.chatid = message.chatid;
+                chat.chatid = msg.chatid;
                 chat.numberid = number.id;
                 chat.value = msg.number;
-                chat.displayname = msg.pushName || '';
+                chat.displayname = msg.from.pushname || '';
                 chat.isgroup = msg.isgroup;
                 chat.dtcreated = NOW;
                 chat.lastmessage = msg.id;
@@ -440,23 +440,31 @@ class WhatsAppInstance extends EventEmitter {
             } else {
                 chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'image');
                 chat.lastmessage = msg.id;
+                chat.displayname = msg.from.pushname || '';
                 chat.dtupdated = NOW;
-                await t.db.update('db2/tbl_chat', chat).promise();
+                await t.db.update('db2/tbl_chat', chat).id(chat.id).promise();
             }
 
             var message = {};
             message.id = msg.id;
             message.chatid = chat.id;
             message.type = msg.type;
+
+
+            if (typeof msg.content == 'string') {
+                message.content = msg.content;
+            } else {
+                message.content = msg.content.url;
+                message.caption = msg.content.body;
+                message.data = JSON.stringify(msg.content);
+            }
             message.value = msg.content;
-            message.caption = msg.caption;
-            message.quoted = msg.quoted;
             message.isviewonce = msg.isviewonce;
             message.dtcreated = NOW;
             message.custom = msg.custom;
             message.kind = 'received';
             message.isgroup = msg.isgroup;
-            message.isread = msg.isread;
+            message.isread = false;
 
             await t.db.insert('db2/tbl_message', message).promise();
             await t.db.update('db2/tbl_chat', { '+unread': 1, '+msgcount': 1 }).id(chat.id).promise();
@@ -572,6 +580,8 @@ class WhatsAppInstance extends EventEmitter {
 
     async ask(number, chatid, content, type, isgroup, istag, user, group, msg) {
         var t = this;
+        
+        console.log('ASKING...');
         const obj = {
             id: msg.msgid,
             content: content,
@@ -581,14 +591,15 @@ class WhatsAppInstance extends EventEmitter {
             isgroup: isgroup,
             istag: istag,
             from: user,
-            group: group
+            group: group,
+            isviewonce: false
         };
         if (t.origin == 'zapwize') {
             t.ws_send(obj);
 
         }
         console.log(obj);
-        this.saveToDatabase(msg);
+        this.saveToDatabase(obj);
         t.emit('ask', obj);
     }
 
@@ -728,7 +739,7 @@ class WhatsAppInstance extends EventEmitter {
         fs.save(id || UID(), obj.name, obj.file.base64ToBuffer(), function (err, meta) {
             meta.url = '/download/' + data.number + '_{0}.{1}'.format(meta.id.sign(CONF.salt), meta.ext);
             callback && callback(meta);
-        }, data.custom, CONF.ttl);
+        }, data.custom, data.custom.type == 'status' ? '1 day' : CONF.ttl);
     }
 
     onservice(tick) {
@@ -982,7 +993,7 @@ class WhatsAppInstance extends EventEmitter {
                     getMessage: this.store.getMessage.bind(this.store),
                     // Remove problematic options that cause issues
                     // generateHighQualityLinkPreview: false,
-                    // syncFullHistory: false,
+                    syncFullHistory: true,
                     // retryRequestDelayMs: 1000,
                     // maxMsgRetryCount: 3,
                     // connectTimeoutMs: 120000,
@@ -1346,29 +1357,25 @@ class WhatsAppInstance extends EventEmitter {
             // Add messages to queue to handle bursts
             for (const message of messageUpdate.messages) {
 
-                console.log("Starting the loop.......")
                 let msg = message.message;
-
-                console.log("Raw message:", JSON.stringify(message, null, 2));
 
                 if (msg && msg.protocolMessage) {
                     console.log("Protocol message found:", msg.protocolMessage);
-
                     if (msg.protocolMessage.type === 0) {
                         let revoked = msg.protocolMessage.key;
                         console.log('[REVOKED] from store - key:', revoked);
 
                         if (FUNC.loadMessage) {
+                            let restoredMessage = await t.db.read('db2/tbl_message').id(revoked.id).promise();
+                            if (restoredMessage) {
+                                await t.db.update('db2/tbl_message', { kind: 'revoked', dtdeleted: NOW, isDeleted: true }).promise();
+                                t.emit('message-revoked', {revoked, restoredMessage})
+                            }
+
                             let revokedMessage = await FUNC.loadMessage(revoked.remoteJid, revoked.id);
                             console.log('[REVOKED] loaded message:', revokedMessage);
-                        } else {
-                            console.warn("No store or loadMessage function available");
                         }
-                    } else {
-                        console.log("Protocol message type is not 0:", msg.protocolMessage.type);
-                    }
-                } else {
-                    console.log("No protocolMessage found in message");
+                    } 
                 }
 
 
