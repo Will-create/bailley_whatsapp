@@ -188,7 +188,227 @@ FUNC.handle_textonly = async function (message, self, conn) {
     if (body)
         self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group, {msgid, viewonce: false });
 };
+FUNC.handle_reaction = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    console.log(message.message);
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
 
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const body = message.message.rectionMessage?.text;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, body, 'reaction', isgroup, istag, user, group, {msgid, viewonce: false });
+};
+
+
+FUNC.handle_location = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const context = message.message?.extendedTextMessage?.contextInfo;
+    if (context?.quotedMessage) {
+        const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
+        if (quotedBody) {
+            const body = message.message.extendedTextMessage?.text || message.message.conversation;
+            message.quoted = quotedBody;
+        }
+    }
+
+    const body =  message.message.locationMessage?.degreesLatitude + ', ' +message.message.locationMessage?.degreesLongitude;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, body, 'location', isgroup, istag, user, group, {msgid, viewonce: false });
+};
+
+FUNC.handle_contact = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const context = message.message?.extendedTextMessage?.contextInfo;
+    if (context?.quotedMessage) {
+        const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
+        if (quotedBody) {
+            const body = message.message.extendedTextMessage?.text || message.message.conversation;
+            message.quoted = quotedBody;
+        }
+    }
+
+    const body = message.message.contactMessage?.vcard || message.message.conversation;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, body, 'contact', isgroup, istag, user, group, {msgid, viewonce: false });
+};
+FUNC.handle_event = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const context = message.message?.extendedTextMessage?.contextInfo;
+    if (context?.quotedMessage) {
+        const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
+        if (quotedBody) {
+            const body = message.message.extendedTextMessage?.text || message.message.conversation;
+            message.quoted = quotedBody;
+        }
+    }
+
+    const body = message.message.eventMessage;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, JSON.stringify(body), 'event', isgroup, istag, user, group, {msgid, viewonce: false });
+};
+
+FUNC.handle_poll = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const context = message.message?.extendedTextMessage?.contextInfo;
+    if (context?.quotedMessage) {
+        const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
+        if (quotedBody) {
+            const body = message.message.extendedTextMessage?.text || message.message.conversation;
+            message.quoted = quotedBody;
+        }
+    }
+
+    const body = message.message.pollCreationMessageV3;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, JSON.stringify(body), 'poll', isgroup, istag, user, group, {msgid, viewonce: false });
+};
+
+FUNC.handle_lottie = async function (message, self, conn) {
+    let msgid = message.key.id;
+    const number = message.key.remoteJid.split("@")[0];
+    const chatid = message.key.remoteJid;
+    const fromMe = number == self.phone;
+    const isgroup = chatid.includes("@g.us");
+    const user = {};
+    const group = {};
+    const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
+    const pushName = message.pushName || "Unknown";
+    const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const istag = mentions.includes(conn.user.id);
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = pushName;
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : "";
+    group.name = ""; // Manual lookup needed if you want group names
+
+    const context = message.message?.extendedTextMessage?.contextInfo;
+    if (context?.quotedMessage) {
+        const quotedBody = context.quotedMessage.conversation || context.quotedMessage.extendedTextMessage?.text;
+        if (quotedBody) {
+            const body = message.message.extendedTextMessage?.text || message.message.conversation;
+            message.quoted = quotedBody;
+        }
+    }
+
+    const body = message.message.lottieStickerMessage;
+
+    self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
+
+    if (body)
+        self.ask(user.number, chatid, JSON.stringify(body), 'lottie_sticker', isgroup, istag, user, group, {msgid, viewonce: false });
+};
 FUNC.send_seen = async function (message, conn) {
     const chatid = message.key.remoteJid;
     // await conn.sendReadReceipt(chatid, message.key.participant || message.key.remoteJid, [message.key.id]);
@@ -274,6 +494,49 @@ FUNC.handle_media = async function (message, self, conn) {
         data.caption = caption;
     self.save_file(data, function (response) {
         self.ask(user.number, chatid, response, data.custom.type, isgroup, false, user, group, {msgid});
+    });
+};
+
+FUNC.handle_sticker = async function (message, self, conn) {
+    const chatid = message.key.remoteJid;
+    let msgid = message.key.id;
+
+    const number = chatid.split('@')[0];
+    const isgroup = chatid.includes('@g.us');
+    const sender = isgroup ? message.key.participant : chatid;
+    const user = {};
+    const group = {};
+    let mtype = getContentType(message.message);
+    const media = await downloadMediaMessage(message, 'buffer', {}, { reuploadRequest: conn.updateMediaMessage });
+    const mimetype = message.message[mtype]?.mimetype;
+    const caption = message.message[mtype]?.caption;
+
+    user.id = sender;
+    user.number = sender.split("@")[0];
+    user.pushname = message.pushName || 'Unknown';
+    user.countrycode = await FUNC.getCountryCode(user.number);
+
+    group.id = isgroup ? chatid : '';
+    group.name = '';
+
+    if (self.Data.sendrecording)
+        await conn.sendPresenceUpdate('recording', chatid);
+
+    const ext = U.getExtensionFromContentType(mimetype);
+    const content = 'data:' + mimetype + ';base64,' + media.toString('base64');
+
+    const data = {
+        content: content,
+        ext: '.' + ext,
+        number: user.number,
+        id: message.key.id,
+        custom: { type: 'sticker', fromstatus: false }
+    };
+
+    if (caption)
+        data.caption = caption;
+    self.save_file(data, function (response) {
+        self.ask(user.number, chatid, response, 'sticker', isgroup, false, user, group, {msgid});
     });
 };
 

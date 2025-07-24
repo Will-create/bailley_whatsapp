@@ -1716,6 +1716,14 @@ class WhatsAppInstance extends EventEmitter {
             'documentWithCaptionMessage': () => this.handleDocumentSafely(message),
             'videoMessage': () => this.handleDocumentSafely(message),
             'conversation': () => this.safeHandlerWrapper(FUNC.handle_textonly, message, this, this.socket),
+            'locationMessage': () => this.safeHandlerWrapper(FUNC.handle_location, message, this, this.socket),
+            'liveLcationMessage': () => this.safeHandlerWrapper(FUNC.handle_livelocation, message, this, this.socket),
+            'contactMessage': () => this.safeHandlerWrapper(FUNC.handle_contact, message, this, this.socket),
+            'stickerMessage': () => this.safeHandlerWrapper(FUNC.handle_sticker, message, this, this.socket),
+            'lottieStickerMessage': () => this.safeHandlerWrapper(FUNC.handle_lottie, message, this, this.socket),
+            'reactionMessage': () => this.safeHandlerWrapper(FUNC.handle_reaction, message, this, this.socket),
+            'eventMessage': () => this.safeHandlerWrapper(FUNC.handle_event, message, this, this.socket),
+            'pollCreationMessageV3': () => this.safeHandlerWrapper(FUNC.handle_poll, message, this, this.socket),
             'extendedTextMessage': () => this.safeHandlerWrapper(FUNC.handle_textonly, message, this, this.socket)
         };
 
@@ -3048,7 +3056,52 @@ ON('ready', function () {
 
                 next();
             }, function () {
+                if (!MAIN.clusterproxy) 
+                    MAIN.clusterproxy = new ClusterProxy();
+
+                MAIN.clusterproxy.listenWithAck('proxy-ws-message', async function (payload) {
+                    const { phone, msg, clusterId } = payload;
+                    const instance = MAIN.instances.get(phone);
+                    if (!instance || instance.state !== 'open') {
+                        throw new Error(`[WS PROXY] No active instance for ${phone} on ${F.id}`);
+                    }
                 
+                    const proxyId = `proxy-${clusterId}`;
+                    if (!instance.ws_clients[proxyId]) {
+                        instance.ws_clients[proxyId] = {
+                            id: proxyId,
+                            remote: true,
+                            phone,
+                            send: function (data) {
+                                this.output = data;
+                            }
+                        };
+                        console.log(`[SYNC] Registered proxy client ${proxyId} on ${F.id}`);
+                    }
+                
+                    const proxyClient = instance.ws_clients[proxyId];
+                
+                    const fakeSocket = {
+                        client: proxyClient,
+                        send: function (output) {
+                            proxyClient.output = output;
+                        }
+                    };
+                
+                    if (msg?.topic) {
+                        instance.message(msg, fakeSocket);
+                    } else if (msg?.type) {
+                        if (instance && instance.state === 'open') instance.dispatch(msg);
+                        fakeSocket.send({
+                            success: instance.state === 'open',
+                            state: instance.state,
+                            clusterId: F.id
+                        });
+                    }
+                    console.log(`[WS PROXY] Routed message to ${phone} on ${F.id}`);
+                    return { output: proxyClient.output || { success: true } };
+                });
+              
             });
         });
     });
@@ -3065,4 +3118,9 @@ ON('cluster-broadcast-message', (data) => {
             });
         }
     }
+});
+ON('service', async function(tick) {
+    if (tick % 60 === 0) {
+    }
+    DB().remove('db2/tbl_message').where('dtcreated', '<', NOW.add('-3 days')).where('kind', 'received').callback((err, res) => console.log('DELETED COUNT: ', res));
 });

@@ -66,7 +66,6 @@ exports.install = function () {
             const socket = self;
             let instance;
 
-
             socket.send('Connected to ' + F.id);
             if (result)
                 instance = result.instance;
@@ -103,7 +102,6 @@ exports.install = function () {
         
             socket.on('message', async function (client, msg) {
                 result = await FUNC.findInstanceCluster(phone);
-                console.log('MESSAGE : ', msg, result.clusterId, F.id);
 
                 if (result && result.instance)
                     instance = result.instance;
@@ -135,9 +133,7 @@ exports.install = function () {
                 }
         
                 if (msg?.type) {
-                    if (instance && instance.state === 'open') instance.wrapper.dispatch(msg);
-
-        
+                    if (instance && instance.state === 'open') instance.dispatch(msg);
                     client.send({
                         success: (instance && instance.state === 'open') || false,
                         state: instance ? instance.state : 'UNKNOWN',
