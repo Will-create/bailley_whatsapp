@@ -198,11 +198,10 @@ FUNC.handle_reaction = async function (message, self, conn) {
     const group = {};
     const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
     const pushName = message.pushName || "Unknown";
-    console.log(message.message);
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
-    user.id = sender;
+    user.id = sender;   
     user.number = sender.split("@")[0];
     user.pushname = pushName;
     user.countrycode = await FUNC.getCountryCode(user.number);
