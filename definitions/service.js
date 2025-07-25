@@ -1174,6 +1174,7 @@ class WhatsAppInstance extends EventEmitter {
                     this.logger.error({ error }, 'Failed to request pairing code');
                 }
             } else if (qr && !this.usePairingCode) {
+                this.qrcode = qr;
                 this.logger.info('QR code received');
                 this.emit('qr', qr);
             }
@@ -2157,6 +2158,16 @@ class ClusterWhatsAppSessionManager extends EventEmitter {
         const pairingConfig = {
             ...config,
             usePairingCode: true,
+            printQRInTerminal: false
+        };
+
+        return this.createInstance(phone, pairingConfig);
+    }
+
+    async createInstanceWithQRCode(phone, config = {}) {
+        const pairingConfig = {
+            ...config,
+            usePairingCode: false,
             printQRInTerminal: false
         };
 

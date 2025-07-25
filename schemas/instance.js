@@ -194,4 +194,61 @@ NEWSCHEMA('Instance', function(schema) {
                 
         }
     });
+
+    schema.action('qr', {
+        name: 'Create instance with qrcode scanning',
+        input: '*phone:String,name:string,webhook:String',
+        action: async function($, model) {
+                let phone = model.phone;
+                    try {
+                        const instance = await MAIN.hub.getrandom().createInstanceWithQRCode(phone, model);
+                        instance && instance.on('qr', function(data){
+                            $.callback(data);
+                        });
+                        
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+        }
+    });
+
+    schema.action('qr_get', {
+        name: 'Get qr code of existing instance',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result) {
+                    $.invalid('Whatsapp session not found');
+                    return;
+                }
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'qr_get';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+                if (result.instance) {
+                    // Local instance
+                    try {
+                        let qr = instance.qrcode;
+                        $.callback(qr);
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+                } 
+        }
+    });
 })
