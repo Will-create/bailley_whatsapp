@@ -108,7 +108,6 @@ exports.install = function () {
                 if (result && result.instance)
                     instance = result.instance;
 
-                
                 if (result && !result.local) {
                     try {
                         const response = await MAIN.clusterproxy.sendWithAck('proxy-ws-message', {
