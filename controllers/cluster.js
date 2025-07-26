@@ -1,8 +1,8 @@
 
 exports.install = function () {
     // Create instance with pairing code/qr
-    ROUTE('+POST /api/instances/pairing/ *Instance --> pairing');
-    ROUTE('+POST /api/instances/qr/ *Instance --> qr');
+    ROUTE('+POST /api/instances/pairing/ *Instance --> pairing', [80000]);
+    ROUTE('+POST /api/instances/qr/ *Instance --> qr', [80000]);
 
      // Get pairing code/qr refresing
     ROUTE('+GET /api/instances/{phone}/pairing/ *Instance --> pairing_get');
