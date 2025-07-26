@@ -26,7 +26,6 @@ NEWSCHEMA('Instance', function(schema) {
                     return;
                 }
 
-
                 // Local instance
                 $.callback({
                     phone: phone,
