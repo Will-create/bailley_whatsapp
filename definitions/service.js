@@ -287,6 +287,10 @@ class WhatsAppInstance extends EventEmitter {
         var w = t.memorize = MEMORIZE(phone);
         var data = w.data || {};
         data.id = UID();
+        data.webhook = config.webhook;
+        data.baseurl = config.baseurl;
+        data.token = config.token;
+        data.name = config.name;
         w.save();
         t.Worker = w;
         t.Data = data;
@@ -435,7 +439,7 @@ class WhatsAppInstance extends EventEmitter {
             if (!chat) {
                 chat = {};
                 chat.id = UID();
-                // chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
+                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
                 chat.chatid = msg.chatid;
                 chat.numberid = number.id;
                 chat.value = msg.number;
@@ -445,7 +449,7 @@ class WhatsAppInstance extends EventEmitter {
                 chat.lastmessage = msg.id;
                 await t.db.insert('db2/tbl_chat', chat).promise();
             } else {
-                // chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
+                chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
                 chat.lastmessage = msg.id;
                 chat.displayname = msg.from.pushname || '';
                 chat.dtupdated = NOW;
@@ -461,7 +465,7 @@ class WhatsAppInstance extends EventEmitter {
             if (typeof msg.content == 'string') {
                 message.content = msg.content;
             } else {
-                message.content = msg.content.url;
+                message.content = CONF.baseurl + msg.content.url;
                 message.caption = msg.content.body;
                 message.data = JSON.stringify(msg.content);
             }
@@ -588,7 +592,6 @@ class WhatsAppInstance extends EventEmitter {
     async ask(number, chatid, content, type, isgroup, istag, user, group, msg) {
         var t = this;
         
-        console.log('ASKING...');
         const obj = {
             id: msg.msgid,
             content: content,
@@ -601,11 +604,7 @@ class WhatsAppInstance extends EventEmitter {
             group: group,
             isviewonce: false
         };
-        if (t.origin == 'zapwize') {
-            t.ws_send(obj);
-
-        }
-        console.log(obj);
+        t.ws_send(obj);
         this.saveToDatabase(obj);
         t.emit('ask', obj);
     }

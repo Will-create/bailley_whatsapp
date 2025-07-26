@@ -149,16 +149,18 @@ NEWSCHEMA('Instance', function(schema) {
                     return;
                 }
 
-
                 if (result.instance) {
                     // Local instance
                     try {
                         await instance.requestPairingCode();
-                        $.callback({
-                            success: true,
-                            phone: phone,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
+                        instance.on('pairing-code', function(data) {
+                            $.callback({
+                                success: true,
+                                phone: phone,
+                                value: data,
+                                clusterId: MAIN.sessionManager.clusterId
+                            });
+                        })
                     } catch (error) {
                         $.callback({
                             success: false,
@@ -174,7 +176,7 @@ NEWSCHEMA('Instance', function(schema) {
 
     schema.action('pairing', {
         name: 'Refresh the pairing code',
-        input: '*phone:String,name:string,webhook:String',
+        input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
         action: async function($, model) {
                 let phone = model.phone;
                     try {
@@ -196,7 +198,7 @@ NEWSCHEMA('Instance', function(schema) {
 
     schema.action('qr', {
         name: 'Create instance with qrcode scanning',
-        input: '*phone:String,name:string,webhook:String',
+        input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
         action: async function($, model) {
                 let phone = model.phone;
                     try {
@@ -239,7 +241,7 @@ NEWSCHEMA('Instance', function(schema) {
                     // Local instance
                     try {
                         let qr = instance.qrcode;
-                        $.callback(qr);
+                        $.callback({ value: qr });
                     } catch (error) {
                         $.callback({
                             success: false,

@@ -1,8 +1,13 @@
 
 exports.install = function () {
-    // Create instance with pairing code
+    // Create instance with pairing code/qr
     ROUTE('+POST /api/instances/pairing/ *Instance --> pairing');
     ROUTE('+POST /api/instances/qr/ *Instance --> qr');
+
+     // Get pairing code/qr refresing
+    ROUTE('+GET /api/instances/{phone}/pairing/ *Instance --> pairing_get');
+    ROUTE('+GET /api/instances/{phone}/qr/ *Instance --> qr_get');
+     
     // Delete instance
     ROUTE('+DELETE /api/instances/{phone}/     *Instance --> delete');
         
@@ -12,10 +17,7 @@ exports.install = function () {
     // Refresh pairing code
     ROUTE('+POST /api/instances/{phone}/pairing/refresh/ *Instance --> pairing_refresh');
     
-    // Get pairing code
-    ROUTE('+GET /api/instances/{phone}/pairing/ *Instance --> pairing_get');
-    ROUTE('+GET /api/instances/{phone}/qr/ *Instance --> qr_get');
-    
+   
 
     ROUTE('+POST /api/config/{phone}/ *Manager --> config_save');
     ROUTE('+GET /api/config/{phone}/ *Manager --> config_read');
