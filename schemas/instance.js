@@ -7,7 +7,7 @@ NEWSCHEMA('Instance', function(schema) {
 
 
                 const result = await FUNC.findInstanceCluster(phone);
-                    
+
                 if (!result) {
                     $.invalid('Whatsapp session not found');
                     return;
@@ -36,7 +36,7 @@ NEWSCHEMA('Instance', function(schema) {
                     logs: result.instance.logs,
                     config: result.instance.config || result.instance.data
                 });
-               
+
         }
     });
 
@@ -47,7 +47,7 @@ NEWSCHEMA('Instance', function(schema) {
         action: async function($) {
                 let phone = $.params.phone;
                 const result = await FUNC.findInstanceCluster(phone);
-                    
+
                 if (!result) {
                     $.invalid('Whatsapp session not found');
                     return;
@@ -82,7 +82,7 @@ NEWSCHEMA('Instance', function(schema) {
 
 
                 const result = await FUNC.findInstanceCluster(phone);
-                    
+
                 if (!result) {
                     $.invalid('Whatsapp session not found');
                     return;
@@ -104,12 +104,10 @@ NEWSCHEMA('Instance', function(schema) {
                 if (result.instance) {
                     // Local instance
                     try {
-                        await instance.refreshPairingCode();
-                        $.callback({
-                            success: true,
-                            phone: phone,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
+                        await result.instance.refreshPairingCode();
+						result.instance.on('pairing-code', function(data) {
+							$.callback({ success: true, phone, value: data.code });
+						});
                     } catch (error) {
                         $.callback({
                             success: false,
@@ -117,59 +115,8 @@ NEWSCHEMA('Instance', function(schema) {
                             clusterId: MAIN.sessionManager.clusterId
                         });
                     }
-                } 
-               
-        }
-    });
-
-    schema.action('pairing_get', {
-        name: 'Refresh the pairing code',
-        params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-
-
-                const result = await FUNC.findInstanceCluster(phone);
-                    
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
                 }
 
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'pairing_get';
-                    payload.params = $.params;
-                    payload.query = $.query;
-
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-
-                if (result.instance) {
-                    // Local instance
-                    try {
-                        await instance.requestPairingCode();
-                        instance.on('pairing-code', function(data) {
-                            $.callback({
-                                success: true,
-                                phone: phone,
-                                value: data,
-                                clusterId: MAIN.sessionManager.clusterId
-                            });
-                        })
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                } 
-               
         }
     });
 
@@ -180,11 +127,12 @@ NEWSCHEMA('Instance', function(schema) {
         action: async function($, model) {
                 let phone = model.phone;
                     try {
-                        const instance = await MAIN.hub.getrandom().createInstanceWithPairingCode(phone, model);
+                        const instance = await MAIN.hub.getrandom();
+						instance && instance.createInstanceWithPairingCode(phone, model);
                         instance && instance.on('pairing-code', function(data){
-                            $.callback(data);
+                            $.callback({ success: true, phone, value: data.code });
                         });
-                        
+
                     } catch (error) {
                         $.callback({
                             success: false,
@@ -192,7 +140,7 @@ NEWSCHEMA('Instance', function(schema) {
                             clusterId: MAIN.sessionManager.clusterId
                         });
                     }
-                
+
         }
     });
 
@@ -202,11 +150,12 @@ NEWSCHEMA('Instance', function(schema) {
         action: async function($, model) {
                 let phone = model.phone;
                     try {
-                        const instance = await MAIN.hub.getrandom().createInstanceWithQRCode(phone, model);
+                        const instance = await MAIN.hub.getrandom();
+						instance && instance.createInstanceWithQRCode(phone, model);
                         instance && instance.on('qr', function(data){
-                            $.callback(data);
+                            $.callback({ success: true, phone, value: data });
                         });
-                        
+
                     } catch (error) {
                         $.callback({
                             success: false,
@@ -219,6 +168,7 @@ NEWSCHEMA('Instance', function(schema) {
 
     schema.action('qr_get', {
         name: 'Get qr code of existing instance',
+		params: '*phone:String',
         action: async function($) {
                 let phone = $.params.phone;
                 const result = await FUNC.findInstanceCluster(phone);
@@ -249,7 +199,7 @@ NEWSCHEMA('Instance', function(schema) {
                             clusterId: MAIN.sessionManager.clusterId
                         });
                     }
-                } 
+                }
         }
     });
 })
