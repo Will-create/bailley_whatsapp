@@ -11,6 +11,15 @@ exports.install = function () {
 	// Delete instance
 	ROUTE('+DELETE /api/instances/{phone}/     *Instance --> delete');
 
+	// Logout instance
+	ROUTE('+POST /api/instances/{phone}/logout/     *Instance --> logout');
+
+	// Pause instance
+	ROUTE('+POST /api/instances/{phone}/pause/     *Instance --> pause');
+
+	// Resume instance
+	ROUTE('+POST /api/instances/{phone}/resume/     *Instance --> resume');
+
 	// Get instance info (cluster-aware)
 	ROUTE('+GET /api/instances/{phone}/     *Instance --> read');
 

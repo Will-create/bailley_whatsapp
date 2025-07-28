@@ -270,6 +270,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            this.CRITICAL_TIMEOUT = 30000; // 30 seconds
            this.processingQueue = false;
            this.isShuttingDown = false;
+           this.isPaused = false; // New property for pausing session
            this.processedMessages = new Set(); // Deduplication
            this.failedMessages = new Map(); // Track failures
            this.setupEventHandlers();
@@ -485,6 +486,10 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
        }
        PUB(topic, obj, broker) {
            var t = this;
+           if (t.isPaused && topic !== 'session_paused' && topic !== 'session_resumed') {
+               t.logger.warn(`Instance is paused, skipping PUB for topic: ${topic}`);
+               return;
+           }
            obj.env = t.Worker.data;
            obj.topic = topic;
            console.log('PUB: ' + topic, obj.content);
@@ -591,6 +596,10 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
    
        async ask(number, chatid, content, type, isgroup, istag, user, group, msg) {
            var t = this;
+           if (t.isPaused) {
+               t.logger.warn('Instance is paused, cannot ask.');
+               return;
+           }
    
            const obj = {
                id: msg.msgid,
@@ -757,6 +766,10 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
        }
    
        async pinMessage(data) {
+           if (this.isPaused) {
+               this.logger.warn('Instance is paused, cannot pin message.');
+               return;
+           }
            this.ensureConnection();
            return this.socket.sendMessage(data.chatid, {
                pin: {
@@ -814,8 +827,19 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
                    output.content = state;
                    break;
                case 'restart':
-               case 'logout':
                    t.whatsapp && await t.restartInstance();
+                   output.content = 'OK';
+                   break;
+               case 'logout':
+                   t.whatsapp && await t.logoutInstance();
+                   output.content = 'OK';
+                   break;
+               case 'pause':
+                   t.whatsapp && await t.pauseInstance();
+                   output.content = 'OK';
+                   break;
+               case 'resume':
+                   t.whatsapp && await t.resumeInstance();
                    output.content = 'OK';
                    break;
                case 'reset':
@@ -1985,7 +2009,91 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
    
            }, this.healthCheckInterval);
        }
+
+       async pauseInstance() {
+           try {
+               if (this.isPaused) {
+                   this.logger.info('Instance already paused.');
+                   return;
+               }
+               this.isPaused = true;
+               if (this.socket) {
+                   this.socket.end(); // Gracefully disconnect Baileys
+                   this.logger.info('Baileys socket disconnected for pause.');
+               }
+               this.PUB('session_paused', { content: { phone: this.phone, clusterId: F.id } });
+               this.logger.info('Instance paused successfully.');
+           } catch (error) {
+               this.logger.error({ error }, 'Error pausing instance.');
+               throw error;
+           }
+       }
+
+       async resumeInstance() {
+           try {
+               if (!this.isPaused) {
+                   this.logger.info('Instance not paused.');
+                   return;
+               }
+               this.isPaused = false;
+               if (!this.socket || !this.socket.ws.readyState) { // Check if socket needs re-creation
+                   await this.createSocket();
+                   this.logger.info('Baileys socket reconnected for resume.');
+               }
+               this.PUB('session_resumed', { content: { phone: this.phone, clusterId: F.id } });
+               this.logger.info('Instance resumed successfully.');
+           } catch (error) {
+               this.logger.error({ error }, 'Error resuming instance.');
+               throw error;
+           }
+       }
+
+       async logoutInstance() {
+           const fs = require('fs').promises;
+           const path = require('path');
    
+           try {
+               this.logger.info('Starting instance logout');
+   
+               // 1. Logout from Baileys session
+               if (this.socket) {
+                   await this.socket.logout();
+                   this.logger.info('Logged out from Baileys session');
+               }
+   
+               // 2. Clean up auth state directory
+               const authDir = path.join(this.config.authDir || 'databases', this.phone);
+               try {
+                   await fs.rm(authDir, { recursive: true, force: true });
+                   this.logger.info(`Removed auth directory: ${authDir}`);
+               } catch (error) {
+                   this.logger.error({ error }, `Failed to remove auth directory: ${authDir}`);
+               }
+   
+               // 3. Delete data_[number].json file
+               const dataFilePath = path.join('databases', `data_${this.phone}.json`);
+               try {
+                   await fs.unlink(dataFilePath);
+                   this.logger.info(`Removed data file: ${dataFilePath}`);
+               } catch (error) {
+                   this.logger.error({ error }, `Failed to remove data file: ${dataFilePath}`);
+               }
+   
+               // 4. Publish deconnecte event to the cluster
+               this.PUB('deconnecte', { content: { phone: this.phone, clusterId: F.id } });
+   
+               // 5. Graceful shutdown
+               await this.gracefulShutdown('logout');
+   
+               this.logger.info('Instance logout completed');
+   
+           } catch (error) {
+               this.logger.error({ error }, 'Error during instance logout');
+               // Still attempt a graceful shutdown even if parts of the cleanup fail
+               await this.gracefulShutdown('logout_error');
+           }
+       }
+
        async gracefulShutdown(reason = 'unknown') {
            if (this.isShuttingDown) return;
    
