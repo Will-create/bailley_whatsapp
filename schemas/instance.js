@@ -202,4 +202,119 @@ NEWSCHEMA('Instance', function(schema) {
                 }
         }
     });
+
+    schema.action('pause', {
+        name: 'Pause the instance',
+		params: '*phone:String',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result) {
+                    $.invalid('Whatsapp session not found');
+                    return;
+                }
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'pause';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+                if (result.instance) {
+                    // Local instance
+                    try {
+                    
+                        await local.instance.pauseInstance();
+                        $.callback({ success: true, phone, value: true });
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+                }
+        }
+    });
+
+
+    schema.action('resume', {
+        name: 'Resume the instance',
+		params: '*phone:String',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result) {
+                    $.invalid('Whatsapp session not found');
+                    return;
+                }
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'resume';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+                if (result.instance) {
+                    // Local instance
+                    try {
+                    
+                        await local.instance.resumeInstance();
+                        $.callback({ success: true, phone, value: true });
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+                }
+        }
+    });
+
+
+    schema.action('logout', {
+        name: 'Logout the instance',
+		params: '*phone:String',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result) {
+                    $.invalid('Whatsapp session not found');
+                    return;
+                }
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'resume';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+                if (result.instance) {
+                    // Local instance
+                    try {
+                        await local.instance.logoutInstance();
+                        $.callback({ success: true, phone, value: true });
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+                }
+        }
+    });
 })

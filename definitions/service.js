@@ -390,6 +390,20 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            return new Promise(resolve => setTimeout(resolve, ms));
        }
    
+       async getChatName(chatid, isGroup, pushName) {
+           if (isGroup) {
+               try {
+                   const metadata = await this.socket.groupMetadata(chatid);
+                   return metadata.subject;
+               } catch (error) {
+                   this.logger.error({ error, chatid }, 'Failed to get group metadata');
+                   return 'Unknown Group';
+               }
+           } else {
+               return pushName || 'Unknown User';
+           }
+       }
+
        async saveMessageToDatabase(msg, isDeleted = false) {
            var t = this;
            try {
@@ -444,7 +458,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
                    chat.chatid = msg.chatid;
                    chat.numberid = number.id;
                    chat.value = msg.number;
-                   chat.displayname = msg.from.pushname || '';
+                   chat.displayname = await this.getChatName(msg.chatid, msg.isgroup, msg.from.pushname);
                    chat.isgroup = msg.isgroup;
                    chat.dtcreated = NOW;
                    chat.lastmessage = msg.id;
@@ -452,7 +466,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
                } else {
                    chat.photo = await this.socket.profilePictureUrl(msg.chatid, 'preview');
                    chat.lastmessage = msg.id;
-                   chat.displayname = msg.from.pushname || '';
+                   chat.displayname = await this.getChatName(msg.chatid, msg.isgroup, msg.from.pushname);
                    chat.dtupdated = NOW;
                    await t.db.update('db2/tbl_chat', chat).id(chat.id).promise();
                }
@@ -461,6 +475,13 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
                message.id = msg.id;
                message.chatid = chat.id;
                message.type = msg.type;
+        
+               const now = new Date();
+               const date = now.format('dd-MM-yyyy');
+               const time = now.format('HH:mm');
+               message.chatname = chat.displayname;
+               message.date = date;
+               message.time = time;
    
    
                if (typeof msg.content == 'string') {
