@@ -442,7 +442,11 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            }
        }
    
-   
+       async status() {
+        return { ispaused: this.isPaused };
+       }
+
+       
        async saveToDatabase(msg) {
            var t = this;
            try {

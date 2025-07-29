@@ -317,4 +317,42 @@ NEWSCHEMA('Instance', function(schema) {
                 }
         }
     });
+
+
+    schema.action('status', {
+        name: 'Get the status of the instance',
+		params: '*phone:String',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result) {
+                    $.invalid('Whatsapp session not found');
+                    return;
+                }
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'status';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+                if (result.instance) {
+                    // Local instance
+                    try {
+                        let status = await local.instance.status();
+                        $.callback({ success: true, phone, value: status });
+                    } catch (error) {
+                        $.callback({
+                            success: false,
+                            error: error.message,
+                            clusterId: MAIN.sessionManager.clusterId
+                        });
+                    }
+                }
+        }
+    });
 })

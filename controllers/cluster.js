@@ -19,6 +19,9 @@ exports.install = function () {
 
 	// Resume instance
 	ROUTE('+POST /api/instances/{phone}/resume/     *Instance --> resume');
+	
+	// Get the status of an instance
+	ROUTE('+POST /api/instances/{phone}/status/     *Instance --> resume');
 
 	// Get instance info (cluster-aware)
 	ROUTE('+GET /api/instances/{phone}/     *Instance --> read');

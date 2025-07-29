@@ -5,6 +5,13 @@ AUTH(async function($) {
     let phone = $.query.phone || $.split[$.split.length - 1];
     let xtoken = $.headers['mobile-token'];
 
+    let isinternal = ($.split[0] + '/' + $.split[1]) == 'api/instances';
+
+    if (isinternal) {
+        await auth_api($);
+        return;
+    }
+
     if (xtoken) {
         await auth_mobile($);
         return;
@@ -101,4 +108,21 @@ async function auth_mobile($) {
         console.error('Error during mobile authentication:', e);
         $.invalid('Authentication failed: ' + e.message);
     }
+}
+
+async function auth_api($) {
+    let xtoken = $.headers['itoken'];
+
+    if (!xtoken) {
+        $.invalid();
+        return;
+    }
+
+    if (xtoken != CONF.token) {
+        $.invalid();
+        return;
+    }
+
+
+    $.success({ id: 'bot', name: 'Admin bot', sa: true });
 }
