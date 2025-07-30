@@ -1064,7 +1064,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
        }
    
        async createRedisConnection() {
-           const redisManager = new RedisManager({ url: this.config.redisUrl });
+           const redisManager = new RedisManager({ url: CONF.redisUrl });
            this.redisClient = await redisManager.getClient(this.id);
    
            this.store = new RedisStore({
