@@ -23,11 +23,11 @@ exports.install = function () {
 	// Get the status of an instance
 	ROUTE('+POST /api/instances/{phone}/status/     *Instance --> resume');
 
+		// Check if instance exists globally
+		ROUTE('+POST /api/instances/global/{phone}/exists/     *Instance --> exists');
+		
 	// Get instance info (cluster-aware)
 	ROUTE('+GET /api/instances/{phone}/     *Instance --> read');
-
-
-
 
 	ROUTE('+POST /api/config/{phone}/ *Manager --> config_save');
 	ROUTE('+GET /api/config/{phone}/ *Manager --> config_read');

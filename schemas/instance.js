@@ -355,4 +355,16 @@ NEWSCHEMA('Instance', function(schema) {
                 }
         }
     });
+    schema.action('exists', {
+        name: 'Check if a whatsapp session exists',
+		params: '*phone:String',
+        action: async function($) {
+                let phone = $.params.phone;
+                const result = await FUNC.findInstanceCluster(phone);
+                if (!result)
+                    $.callback({ success: false, phone, value: false });
+                else
+                    $.callback({ success: true, phone, value: true });
+        }
+    });
 })

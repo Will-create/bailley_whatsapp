@@ -23,9 +23,11 @@ FUNC.findInstanceCluster = async (phone) => {
     if (global) return { clusterId: global.clusterId, local: false };
 
     // check if folder databases/[phone] or/and databases/data_[phone].json exists and delete them or it. PATH.root('databases') is the root (totaljs). check and delete them
-    Total.Fs.asyncexists(PATH.root('databases/' + phone)) && Total.Fs.rmdirSync(PATH.root('databases/' + phone));
-    Total.Fs.asyncexists(PATH.root('databases/data_' + phone + '.json')) && Total.Fs.rmdirSync(PATH.root('databases/data_' + phone + '.json'));
-
+    if (Total.Fs.existsSync(PATH.root('databases/' + phone)))
+        Total.Fs.rmdirSync(PATH.root('databases/' + phone), { recursive: true });
+    
+    if (Total.Fs.existsSync(PATH.root('databases/data_' + phone + '.json')))
+        Total.Fs.unlinkSync(PATH.root('databases/data_' + phone + '.json'));
     return null;
 };
 
