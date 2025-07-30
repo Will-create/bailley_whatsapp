@@ -4,8 +4,8 @@ AUTH(async function($) {
     let token = $.headers['token'] || $.query.token;
     let phone = $.query.phone || $.split[$.split.length - 1];
     let xtoken = $.headers['mobile-token'];
-
-    let isinternal = ($.split[0] + '/' + $.split[1]) == 'api/instances';
+    let slice = ($.split[0] + '/' + $.split[1]);
+    let isinternal = slice == 'api/instances' || slice == 'api/cluster';
 
     if (isinternal) {
         await auth_api($);

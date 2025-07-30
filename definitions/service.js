@@ -36,14 +36,6 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
        MAIN.clusters = new Map();
    }
    // Cluster-aware instance lookup helper
-   FUNC.findInstanceCluster = async (phone) => {
-       const local = MAIN.instances.get(phone);
-       if (local) return { instance: local, local: true, clusterId: F.id };
-   
-       const global = await MAIN.sessionManager.getInstanceGlobally(phone);
-       return global ? { clusterId: global.clusterId, local: false } : null;
-   };
-   
    const silentLogger = {
        info: NOOP,
        warn: NOOP,

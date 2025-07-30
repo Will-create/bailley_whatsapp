@@ -14,6 +14,21 @@ FUNC.downloadMessage = async function (msg, msgType) {
 };
 
 
+FUNC.findInstanceCluster = async (phone) => {
+    const local = MAIN.instances.get(phone);
+    if (local) return { instance: local, local: true, clusterId: F.id };
+
+    const global = await MAIN.sessionManager.getInstanceGlobally(phone);
+
+    if (global) return { clusterId: global.clusterId, local: false };
+
+    // check if folder databases/[phone] or/and databases/data_[phone].json exists and delete them or it. PATH.root('databases') is the root (totaljs). check and delete them
+    Total.Fs.asyncexists(PATH.root('databases/' + phone)) && Total.Fs.rmdirSync(PATH.root('databases/' + phone));
+    Total.Fs.asyncexists(PATH.root('databases/data_' + phone + '.json')) && Total.Fs.rmdirSync(PATH.root('databases/data_' + phone + '.json'));
+
+    return null;
+};
+
 FUNC.getCustomTypeByExtension = function(extension) {
 
     const videoExtensions = [
