@@ -1,4 +1,3 @@
-
 exports.install = function () {
 	// Create instance with pairing code/qr
 	ROUTE('+POST /api/instances/pairing/ *Instance --> pairing', [80000]);
@@ -28,6 +27,9 @@ exports.install = function () {
 		
 	// Get instance info (cluster-aware)
 	ROUTE('+GET /api/instances/{phone}/     *Instance --> read');
+
+    // Get dashboard data
+    ROUTE('+POST /api/instances/{phone}/dashboard *Instance --> dashboard');
 
 	ROUTE('+POST /api/config/{phone}/ *Manager --> config_save');
 	ROUTE('+GET /api/config/{phone}/ *Manager --> config_read');
@@ -162,6 +164,3 @@ exports.install = function () {
 		}
 	});
 });
-
-
-}

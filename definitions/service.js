@@ -283,6 +283,8 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            data.webhook = config.webhook;
            data.baseurl = config.baseurl;
            data.token = config.token;
+           data.userid = config.userid;
+           data.tag = config.tag || 'zapwize';
            data.name = config.name;
            w.save();
            t.Worker = w;
@@ -1176,7 +1178,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
    
        async handleConnectionUpdate(update) {
            const { connection, lastDisconnect, qr } = update;
-   
+           const t = this;
            try {
                this.state = connection || 'UNKNOWN';
                this.lastHeartbeat = Date.now();
@@ -1197,6 +1199,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
                    this.clearPairingCodeTimer();
                    this.logger.info('WhatsApp connection established');
                    this.emit('ready');
+                   await t.db.update('db2/tbl_number', { status: 'active' }).where('phonenumber', t.phone).promise();
    
                } else if (connection === 'close') {
                    await this.handleConnectionClose(lastDisconnect);
@@ -1414,7 +1417,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
        async handleConnectionClose(lastDisconnect) {
            const reason = lastDisconnect?.error?.output?.statusCode;
            const shouldReconnect = reason !== DisconnectReason.loggedOut;
-   
+           const t = this;
            // Clear pairing code on certain errors
            if (reason === DisconnectReason.loggedOut || reason === 401 || reason === 403) {
                this.clearPairingCodeTimer();
@@ -1433,13 +1436,14 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            if (reason === DisconnectReason.loggedOut) {
                this.logger.info('Device logged out');
                this.emit('logged-out');
+               await t.db.update('db2/tbl_number', { status: 'inactive' }).where('phonenumber', t.phone).promise();
                return;
            }
    
            // Special handling for code 515 (blocked session)
            if (reason === 515) {
                this.reconnectAttempts++;
-   
+               await t.db.update('db2/tbl_number', { status: 'banned' }).where('phonenumber', t.phone).promise();
                this.logger.info({
                    attempt: this.reconnectAttempts,
                    delay: 5000 // Fixed 5 second delay like working script
@@ -1476,6 +1480,7 @@ const { makeWASocket, useMultiFileAuthState, Browsers, getContentType,
            } else {
                this.logger.error('Max reconnection attempts reached or shutting down');
                this.emit('max-reconnect-attempts');
+               await t.db.update('db2/tbl_number', { status: 'inactive' }).where('phonenumber', t.phone).promise();
            }
        }
        async handleMessages(messageUpdate) {
