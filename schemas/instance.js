@@ -359,25 +359,51 @@ NEWSCHEMA('Instance', function(schema) {
         name: 'Check if a whatsapp session exists',
 		params: '*phone:String',
         action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result)
-                    $.callback({ success: false, phone, value: false });
-                else
-                    $.callback({ success: true, phone, value: true });
-        }
-    });
+            let phone = $.params.phone;
+            const result = await FUNC.findInstanceCluster(phone);
+            if (!result)
+                $.callback({ success: false, phone, value: false });
+            else
+            $.callback({ success: true, phone, value: true });
+    }
+});
+
 
     schema.action('dashboard', {
         name: 'Get dashboard data for an instance',
         params: '*phone:String',
+        query: '*userid:String',
         action: async function($) {
             let phone = $.params.phone;
+            let userid = $.query.userid;
             let db = DB();
 
             async function getDashboardData(number) {
                 let numberid = number.id;
-                let plan = await db.read('tbl_plan').id(number.plans.split(',')[0]).promise();
+                if (!number.plans) {
+                    return {
+                        totalRequests: 0,
+                        increase: 0,
+                        planUsage: 0,
+                        planLimit: 0,
+                        chartData: { labels: [], data: [] }
+                    };
+                }
+                let planid = number.plans.split(',')[0];
+                if (!planid) {
+                    return {
+                        totalRequests: 0,
+                        increase: 0,
+                        planUsage: 0,
+                        planLimit: 0,
+                        chartData: { labels: [], data: [] }
+                    };
+                }
+                let plan = await db.read('tbl_plan').id(planid).promise();
+
+                if (!plan) {
+                    plan = { maxlimit: 0 };
+                }
 
                 let today = new Date();
                 let yesterday = new Date();
@@ -386,14 +412,20 @@ NEWSCHEMA('Instance', function(schema) {
                 let today_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', today.format('dd-MM-yyyy')).promise();
                 let yesterday_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', yesterday.format('dd-MM-yyyy')).promise();
 
-                let totalRequests = await db.count('tbl_request').where('numberid', numberid).promise();
+                let totalRequestsResult = await db.count('tbl_request').where('numberid', numberid).promise();
+                let totalRequests = totalRequestsResult.count;
 
                 let increase = 0;
                 if (yesterday_reqs.length > 0) {
                     increase = ((today_reqs.length - yesterday_reqs.length) / yesterday_reqs.length) * 100;
+                } else if (today_reqs.length > 0) {
+                    increase = 100;
                 }
 
-                let planUsage = (totalRequests.count / plan.maxlimit) * 100;
+                let planUsage = 0;
+                if (plan.maxlimit > 0) {
+                    planUsage = (totalRequests / plan.maxlimit) * 100;
+                }
 
                 let chartData = {
                     labels: [],
@@ -410,7 +442,7 @@ NEWSCHEMA('Instance', function(schema) {
                 }
 
                 return {
-                    totalRequests: totalRequests.count,
+                    totalRequests: totalRequests,
                     increase: increase.toFixed(2),
                     planUsage: planUsage.toFixed(2),
                     planLimit: plan.maxlimit,
@@ -419,7 +451,7 @@ NEWSCHEMA('Instance', function(schema) {
             }
 
             if (phone === 'all') {
-                let numbers = await db.find('tbl_number').promise();
+                let numbers = await db.find('tbl_number').where('userid', userid).promise();
                 let allData = {
                     totalRequests: 0,
                     increase: 0,
@@ -449,7 +481,9 @@ NEWSCHEMA('Instance', function(schema) {
                     }
                 }
 
-                allData.planUsage = (allData.totalRequests / allData.planLimit) * 100;
+                if (allData.planLimit > 0) {
+                    allData.planUsage = (allData.totalRequests / allData.planLimit) * 100;
+                }
 
                 let today = new Date();
                 let yesterday = new Date();
@@ -467,6 +501,8 @@ NEWSCHEMA('Instance', function(schema) {
 
                 if (yesterday_reqs_total > 0) {
                     allData.increase = ((today_reqs_total - yesterday_reqs_total) / yesterday_reqs_total) * 100;
+                } else if (today_reqs_total > 0) {
+                    allData.increase = 100;
                 }
 
                 allData.chartData.labels = Array.from(chartMap.keys());
@@ -481,10 +517,28 @@ NEWSCHEMA('Instance', function(schema) {
                     return;
                 }
 
-                let number = await db.read('tbl_number').where('phonenumber', phone).promise();
+                let number = await db.read('tbl_number').where('phonenumber', phone).where('userid', userid).promise();
+                if (!number) {
+                    $.invalid('Permission denied or number not found.');
+                    return;
+                }
+
+                if (!result.local) {
+                    let payload = {};
+                    payload.clusterId = result.clusterId;
+                    payload.schema = 'Instance';
+                    payload.action = 'dashboard';
+                    payload.params = $.params;
+                    payload.query = $.query;
+                    let res = await MAIN.clusterproxy.getresponse(payload);
+                    $.callback(res);
+                    return;
+                }
+
                 let data = await getDashboardData(number);
                 $.callback(data);
             }
         }
     });
+
 })

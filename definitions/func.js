@@ -13,7 +13,81 @@ FUNC.downloadMessage = async function (msg, msgType) {
     return buffer.toString('base64')
 };
 
+async function getDashboardData(number) {
 
+}
+
+FUNC.getDashboardData = async function (number) {
+    let numberid = number.id;
+    if (!number.plans) {
+        return {
+            totalRequests: 0,
+            increase: 0,
+            planUsage: 0,
+            planLimit: 0,
+            chartData: { labels: [], data: [] }
+        };
+    }
+    let planid = number.plans.split(',')[0];
+    if (!planid) {
+        return {
+            totalRequests: 0,
+            increase: 0,
+            planUsage: 0,
+            planLimit: 0,
+            chartData: { labels: [], data: [] }
+        };
+    }
+    let plan = await db.read('tbl_plan').id(planid).promise();
+
+    if (!plan) {
+        plan = { maxlimit: 0 };
+    }
+
+    let today = new Date();
+    let yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    let today_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', today.format('dd-MM-yyyy')).promise();
+    let yesterday_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', yesterday.format('dd-MM-yyyy')).promise();
+
+    let totalRequestsResult = await db.count('tbl_request').where('numberid', numberid).promise();
+    let totalRequests = totalRequestsResult.count;
+
+    let increase = 0;
+    if (yesterday_reqs.length > 0) {
+        increase = ((today_reqs.length - yesterday_reqs.length) / yesterday_reqs.length) * 100;
+    } else if (today_reqs.length > 0) {
+        increase = 100;
+    }
+
+    let planUsage = 0;
+    if (plan.maxlimit > 0) {
+        planUsage = (totalRequests / plan.maxlimit) * 100;
+    }
+
+    let chartData = {
+        labels: [],
+        data: []
+    };
+
+    for (let i = 6; i >= 0; i--) {
+        let date = new Date();
+        date.setDate(date.getDate() - i);
+        let date_string = date.format('dd-MM-yyyy');
+        let reqs = await db.find('tbl_request').where('numberid', numberid).where('date', date_string).promise();
+        chartData.labels.push(date.format('MMM dd'));
+        chartData.data.push(reqs.length);
+    }
+
+    return {
+        totalRequests: totalRequests,
+        increase: increase.toFixed(2),
+        planUsage: planUsage.toFixed(2),
+        planLimit: plan.maxlimit,
+        chartData: chartData
+    };
+}
 FUNC.findInstanceCluster = async (phone) => {
     const local = MAIN.instances.get(phone);
     if (local) return { instance: local, local: true, clusterId: F.id };
@@ -25,41 +99,41 @@ FUNC.findInstanceCluster = async (phone) => {
     // check if folder databases/[phone] or/and databases/data_[phone].json exists and delete them or it. PATH.root('databases') is the root (totaljs). check and delete them
     if (Total.Fs.existsSync(PATH.root('databases/' + phone)))
         Total.Fs.rmdirSync(PATH.root('databases/' + phone), { recursive: true });
-    
+
     if (Total.Fs.existsSync(PATH.root('databases/data_' + phone + '.json')))
         Total.Fs.unlinkSync(PATH.root('databases/data_' + phone + '.json'));
     return null;
 };
 
-FUNC.getCustomTypeByExtension = function(extension) {
+FUNC.getCustomTypeByExtension = function (extension) {
 
     const videoExtensions = [
-      'mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'mpeg', 'mpg', '3gp', 'm4v'
+        'mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'mpeg', 'mpg', '3gp', 'm4v'
     ];
-  
+
     const documentExtensions = [
-      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'rtf', 'odt', 'ods', 'odp'
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'rtf', 'odt', 'ods', 'odp'
     ];
-  
+
     const otherExtensions = [
-      'zip', 'rar', '7z', 'apk', 'exe', 'dmg', 'tar', 'gz', 'iso', 'bin', 'jar', 'msi', 'xz', 'deb'
+        'zip', 'rar', '7z', 'apk', 'exe', 'dmg', 'tar', 'gz', 'iso', 'bin', 'jar', 'msi', 'xz', 'deb'
     ];
-  
+
     if (videoExtensions.includes(extension)) {
-      return 'video';
+        return 'video';
     }
-  
+
     if (documentExtensions.includes(extension)) {
-      return 'document';
+        return 'document';
     }
-  
+
     if (otherExtensions.includes(extension)) {
-      return 'other';
+        return 'other';
     }
-  
+
     return 'other'; // default fallback
-  }
-  
+}
+
 
 
 FUNC.generateVC = function (data) {
@@ -76,7 +150,7 @@ FUNC.generateVC = function (data) {
 
 FUNC.sleep = function (ms) {
     return new Promise((resolve) => {
-        let timeout = setTimeout(function() {
+        let timeout = setTimeout(function () {
             console.log('Sleeping for ' + ms + 'ms')
             clearInterval(timeout);
             resolve();
@@ -139,7 +213,7 @@ FUNC.processButton = function (buttons) {
 // FUNC fn to return formatted data from the above object with only phone
 FUNC.getFormattedData = function (phone, baseurl, managerid) {
 
-    let data =  {
+    let data = {
         name: 'Muald',
         managerid: managerid,
         clusterid: F.id,
@@ -177,7 +251,7 @@ FUNC.handle_textonly = async function (message, self, conn) {
     const group = {};
     const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
     const pushName = message.pushName || "Unknown";
-    
+
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
@@ -203,7 +277,7 @@ FUNC.handle_textonly = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, body, 'text', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 FUNC.handle_reaction = async function (message, self, conn) {
     let msgid = message.key.id;
@@ -218,7 +292,7 @@ FUNC.handle_reaction = async function (message, self, conn) {
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
-    user.id = sender;   
+    user.id = sender;
     user.number = sender.split("@")[0];
     user.pushname = pushName;
     user.countrycode = await FUNC.getCountryCode(user.number);
@@ -231,7 +305,7 @@ FUNC.handle_reaction = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, body, 'reaction', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, body, 'reaction', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 
 
@@ -245,7 +319,7 @@ FUNC.handle_location = async function (message, self, conn) {
     const group = {};
     const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
     const pushName = message.pushName || "Unknown";
-    
+
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
@@ -266,12 +340,12 @@ FUNC.handle_location = async function (message, self, conn) {
         }
     }
 
-    const body =  message.message.locationMessage?.degreesLatitude + ', ' +message.message.locationMessage?.degreesLongitude;
+    const body = message.message.locationMessage?.degreesLatitude + ', ' + message.message.locationMessage?.degreesLongitude;
 
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, body, 'location', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, body, 'location', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 
 FUNC.handle_contact = async function (message, self, conn) {
@@ -284,7 +358,7 @@ FUNC.handle_contact = async function (message, self, conn) {
     const group = {};
     const sender = isgroup ? message.key.participant || message.participant : message.key.remoteJid;
     const pushName = message.pushName || "Unknown";
-    
+
     const mentions = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
     const istag = mentions.includes(conn.user.id);
 
@@ -310,7 +384,7 @@ FUNC.handle_contact = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, body, 'contact', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, body, 'contact', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 FUNC.handle_event = async function (message, self, conn) {
     let msgid = message.key.id;
@@ -347,7 +421,7 @@ FUNC.handle_event = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, JSON.stringify(body), 'event', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, JSON.stringify(body), 'event', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 
 FUNC.handle_poll = async function (message, self, conn) {
@@ -385,7 +459,7 @@ FUNC.handle_poll = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, JSON.stringify(body), 'poll', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, JSON.stringify(body), 'poll', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 
 FUNC.handle_lottie = async function (message, self, conn) {
@@ -423,7 +497,7 @@ FUNC.handle_lottie = async function (message, self, conn) {
     self.Data.sendtyping && await conn.sendPresenceUpdate('composing', chatid);
 
     if (body)
-        self.ask(user.number, chatid, JSON.stringify(body), 'lottie_sticker', isgroup, istag, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, JSON.stringify(body), 'lottie_sticker', isgroup, istag, user, group, { msgid, viewonce: false });
 };
 FUNC.send_seen = async function (message, conn) {
     const chatid = message.key.remoteJid;
@@ -466,7 +540,7 @@ FUNC.handle_voice = async function (message, self, conn) {
     };
 
     self.save_file(data, function (response) {
-        self.ask(user.number, chatid, response, 'voice', isgroup, false, user, group, {msgid, viewonce: false });
+        self.ask(user.number, chatid, response, 'voice', isgroup, false, user, group, { msgid, viewonce: false });
     });
 };
 
@@ -509,7 +583,7 @@ FUNC.handle_media = async function (message, self, conn) {
     if (caption)
         data.caption = caption;
     self.save_file(data, function (response) {
-        self.ask(user.number, chatid, response, data.custom.type, isgroup, false, user, group, {msgid});
+        self.ask(user.number, chatid, response, data.custom.type, isgroup, false, user, group, { msgid });
     });
 };
 
@@ -552,7 +626,7 @@ FUNC.handle_sticker = async function (message, self, conn) {
     if (caption)
         data.caption = caption;
     self.save_file(data, function (response) {
-        self.ask(user.number, chatid, response, 'sticker', isgroup, false, user, group, {msgid});
+        self.ask(user.number, chatid, response, 'sticker', isgroup, false, user, group, { msgid });
     });
 };
 
@@ -589,7 +663,7 @@ FUNC.handle_image = async function (message, self, conn) {
     };
     self.save_file(data, function (response) {
         if (caption) response.caption = caption;
-        self.ask(user.number, chatid, response, 'image', isgroup, false, user, group, {msgid});
+        self.ask(user.number, chatid, response, 'image', isgroup, false, user, group, { msgid });
     });
 };
 
@@ -607,13 +681,13 @@ FUNC.handle_status = async function (message, self, conn) {
     user.countrycode = await FUNC.getCountryCode(user.number);
 
     const group = {};
-    
+
     const mtype = getContentType(message.message);
     const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage', 'conversation', 'extendedTextMessage'];
     if (!allowedTypes.includes(mtype)) return;
 
 
-    console.log('[NISALA] ', );
+    console.log('[NISALA] ',);
 
 
     const hasmedia = await FUNC.hasmedia(message);
@@ -635,12 +709,12 @@ FUNC.handle_status = async function (message, self, conn) {
             self.ask(number, chatid, response, 'status', false, false, user, group, { msgid });
         });
     } else {
-        self.ask(number, chatid, message.message[mtype].text, 'status', false, false, user, group, {msgid});
+        self.ask(number, chatid, message.message[mtype].text, 'status', false, false, user, group, { msgid });
     }
 };
 
 
-FUNC.wsonmessage = function(instance, client, msg) {
+FUNC.wsonmessage = function (instance, client, msg) {
     if (msg && msg.topic) {
         self.client = client;
         instance.message(msg, self);
@@ -669,8 +743,8 @@ FUNC.wsonmessage = function(instance, client, msg) {
                 }
                 break;
         }
-        
-        
+
+
     }
 }
 
@@ -711,7 +785,7 @@ FUNC.handle_revoked = async function (message, self, conn) {
     if (!chatid.includes('status@broadcast')) return;
     if (!chatid.includes('@newsletter')) return;
 
-    
+
     chatid = message.key.participant;
 
     console.log('[STATUS]: ', message);
@@ -722,7 +796,7 @@ FUNC.handle_revoked = async function (message, self, conn) {
     user.countrycode = await FUNC.getCountryCode(user.number);
 
     const group = {};
-    
+
     const mtype = getContentType(message.message);
     console.log('[LOUIS BERTSON]: ', mtype);
     const allowedTypes = ['videoMessage', 'documentMessage', 'imageMessage', 'audioMessage', 'conversation', 'extendedTextMessage'];
