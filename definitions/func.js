@@ -18,6 +18,7 @@ async function getDashboardData(number) {
 }
 
 FUNC.getDashboardData = async function (number) {
+    let db = DATA;
     let numberid = number.id;
     if (!number.plans) {
         return {
@@ -41,7 +42,7 @@ FUNC.getDashboardData = async function (number) {
     let plan = await db.read('tbl_plan').id(planid).promise();
 
     if (!plan) {
-        plan = { maxlimit: 0 };
+        plan = { limit: 0 };
     }
 
     let today = new Date();
@@ -52,7 +53,7 @@ FUNC.getDashboardData = async function (number) {
     let yesterday_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', yesterday.format('dd-MM-yyyy')).promise();
 
     let totalRequestsResult = await db.count('tbl_request').where('numberid', numberid).promise();
-    let totalRequests = totalRequestsResult.count;
+    let totalRequests = totalRequestsResult;
 
     let increase = 0;
     if (yesterday_reqs.length > 0) {
@@ -62,8 +63,8 @@ FUNC.getDashboardData = async function (number) {
     }
 
     let planUsage = 0;
-    if (plan.maxlimit > 0) {
-        planUsage = (totalRequests / plan.maxlimit) * 100;
+    if (plan.limit > 0) {
+        planUsage = (totalRequests / plan.limit) * 100;
     }
 
     let chartData = {
@@ -84,7 +85,7 @@ FUNC.getDashboardData = async function (number) {
         totalRequests: totalRequests,
         increase: increase.toFixed(2),
         planUsage: planUsage.toFixed(2),
-        planLimit: plan.maxlimit,
+        planLimit: plan.limit,
         chartData: chartData
     };
 }

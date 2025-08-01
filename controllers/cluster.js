@@ -164,3 +164,4 @@ exports.install = function () {
 		}
 	});
 });
+}

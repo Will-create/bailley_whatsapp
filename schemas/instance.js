@@ -1,544 +1,453 @@
 NEWSCHEMA('Instance', function(schema) {
-    schema.action('read', {
-        name: 'Create instance',
-        params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-
-
-                const result = await FUNC.findInstanceCluster(phone);
-
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'read';
-                    payload.params = $.params;
-                    payload.query = $.query;
-
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-
-                // Local instance
-                $.callback({
-                    phone: phone,
-                    clusterId: result.clusterId,
-                    local: true,
-                    state: result.instance.state,
-                    health: result.instance.getHealth(),
-                    logs: result.instance.logs,
-                    config: result.instance.config || result.instance.data
-                });
-
-        }
-    });
-
-
-    schema.action('delete', {
-        name: 'Create instance',
-        params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'read';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-
-                await MAIN.sessionManager.removeInstance(phone, 'manual-delete');
-                $.callback({
-                    success: true,
-                    phone: phone,
-                    clusterId: MAIN.sessionManager.clusterId
-                });
-        }
-    });
-
-    schema.action('pairing_refresh', {
-        name: 'Refresh the pairing code',
-        params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-
-
-                const result = await FUNC.findInstanceCluster(phone);
-
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'pairing_refresh';
-                    payload.params = $.params;
-                    payload.query = $.query;
-
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-
-                if (result.instance) {
-                    // Local instance
-                    try {
-                        await result.instance.refreshPairingCode();
-						result.instance.on('pairing-code', function(data) {
-							$.callback({ success: true, phone, value: data.code });
-						});
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-
-        }
-    });
-
-
-    schema.action('pairing', {
-        name: 'Refresh the pairing code',
-        input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
-        action: async function($, model) {
-                let phone = model.phone;
-                    try {
-                        const instance = await MAIN.hub.getrandom();
-						instance && instance.createInstanceWithPairingCode(phone, model);
-                        instance && instance.on('pairing-code', function(data){
-                            $.callback({ success: true, phone, value: data.code });
-                        });
-
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-
-        }
-    });
-
-    schema.action('qr', {
-        name: 'Create instance with qrcode scanning',
-        input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
-        action: async function($, model) {
-                let phone = model.phone;
-                    try {
-                        const instance = await MAIN.hub.getrandom();
-						instance && instance.createInstanceWithQRCode(phone, model);
-                        instance && instance.on('qr', function(data){
-                            $.callback({ success: true, phone, value: data });
-                        });
-
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-        }
-    });
-
-    schema.action('qr_get', {
-        name: 'Get qr code of existing instance',
+	schema.action('read', {
+		name: 'Create instance',
 		params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'qr_get';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-                if (result.instance) {
-                    // Local instance
-                    try {
-                        let qr = instance.qrcode;
-                        $.callback({ value: qr });
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-        }
-    });
+		action: async function($) {
+			let phone = $.params.phone;
 
-    schema.action('pause', {
-        name: 'Pause the instance',
+
+			const result = await FUNC.findInstanceCluster(phone);
+
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'read';
+				payload.params = $.params;
+				payload.query = $.query;
+
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+
+			// Local instance
+			$.callback({
+				phone: phone,
+				clusterId: result.clusterId,
+				local: true,
+				state: result.instance.state,
+				health: result.instance.getHealth(),
+				logs: result.instance.logs,
+				config: result.instance.config || result.instance.data
+			});
+
+		}
+	});
+
+
+	schema.action('delete', {
+		name: 'Create instance',
 		params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'pause';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-                if (result.instance) {
-                    // Local instance
-                    try {
-                    
-                        await local.instance.pauseInstance();
-                        $.callback({ success: true, phone, value: true });
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-        }
-    });
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
 
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
 
-    schema.action('resume', {
-        name: 'Resume the instance',
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'read';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+
+			await MAIN.sessionManager.removeInstance(phone, 'manual-delete');
+			$.callback({
+				success: true,
+				phone: phone,
+				clusterId: MAIN.sessionManager.clusterId
+			});
+		}
+	});
+
+	schema.action('pairing_refresh', {
+		name: 'Refresh the pairing code',
 		params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'resume';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-                if (result.instance) {
-                    // Local instance
-                    try {
-                    
-                        await local.instance.resumeInstance();
-                        $.callback({ success: true, phone, value: true });
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-        }
-    });
+		action: async function($) {
+			let phone = $.params.phone;
 
 
-    schema.action('logout', {
-        name: 'Logout the instance',
+			const result = await FUNC.findInstanceCluster(phone);
+
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'pairing_refresh';
+				payload.params = $.params;
+				payload.query = $.query;
+
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+
+			if (result.instance) {
+				// Local instance
+				try {
+					await result.instance.refreshPairingCode();
+					result.instance.on('pairing-code', function(data) {
+						$.callback({ success: true, phone, value: data.code });
+					});
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+
+		}
+	});
+
+
+	schema.action('pairing', {
+		name: 'Refresh the pairing code',
+		input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
+		action: async function($, model) {
+			let phone = model.phone;
+			try {
+				const instance = await MAIN.hub.getrandom();
+				instance && instance.createInstanceWithPairingCode(phone, model);
+				instance && instance.on('pairing-code', function(data){
+					$.callback({ success: true, phone, value: data.code });
+				});
+
+			} catch (error) {
+				$.callback({
+					success: false,
+					error: error.message,
+					clusterId: MAIN.sessionManager.clusterId
+				});
+			}
+
+		}
+	});
+
+	schema.action('qr', {
+		name: 'Create instance with qrcode scanning',
+		input: '*phone:String,name:string,webhook:String,token:String,baseurl:String,usePairingCode:Boolean',
+		action: async function($, model) {
+			let phone = model.phone;
+			try {
+				const instance = await MAIN.hub.getrandom();
+				instance && instance.createInstanceWithQRCode(phone, model);
+				instance && instance.on('qr', function(data){
+					$.callback({ success: true, phone, value: data });
+				});
+
+			} catch (error) {
+				$.callback({
+					success: false,
+					error: error.message,
+					clusterId: MAIN.sessionManager.clusterId
+				});
+			}
+		}
+	});
+
+	schema.action('qr_get', {
+		name: 'Get qr code of existing instance',
 		params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'resume';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-                if (result.instance) {
-                    // Local instance
-                    try {
-                        await local.instance.logoutInstance();
-                        $.callback({ success: true, phone, value: true });
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-        }
-    });
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'qr_get';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+			if (result.instance) {
+				// Local instance
+				try {
+					let qr = instance.qrcode;
+					$.callback({ value: qr });
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+		}
+	});
 
-
-    schema.action('status', {
-        name: 'Get the status of the instance',
+	schema.action('pause', {
+		name: 'Pause the instance',
 		params: '*phone:String',
-        action: async function($) {
-                let phone = $.params.phone;
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'status';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-                if (result.instance) {
-                    // Local instance
-                    try {
-                        let status = await local.instance.status();
-                        $.callback({ success: true, phone, value: status });
-                    } catch (error) {
-                        $.callback({
-                            success: false,
-                            error: error.message,
-                            clusterId: MAIN.sessionManager.clusterId
-                        });
-                    }
-                }
-        }
-    });
-    schema.action('exists', {
-        name: 'Check if a whatsapp session exists',
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'pause';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+			if (result.instance) {
+				// Local instance
+				try {
+
+					await local.instance.pauseInstance();
+					$.callback({ success: true, phone, value: true });
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+		}
+	});
+
+
+	schema.action('resume', {
+		name: 'Resume the instance',
 		params: '*phone:String',
-        action: async function($) {
-            let phone = $.params.phone;
-            const result = await FUNC.findInstanceCluster(phone);
-            if (!result)
-                $.callback({ success: false, phone, value: false });
-            else
-            $.callback({ success: true, phone, value: true });
-    }
-});
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'resume';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+			if (result.instance) {
+				// Local instance
+				try {
+
+					await local.instance.resumeInstance();
+					$.callback({ success: true, phone, value: true });
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+		}
+	});
 
 
-    schema.action('dashboard', {
-        name: 'Get dashboard data for an instance',
-        params: '*phone:String',
-        query: '*userid:String',
-        action: async function($) {
-            let phone = $.params.phone;
-            let userid = $.query.userid;
-            let db = DB();
+	schema.action('logout', {
+		name: 'Logout the instance',
+		params: '*phone:String',
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'resume';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+			if (result.instance) {
+				// Local instance
+				try {
+					await local.instance.logoutInstance();
+					$.callback({ success: true, phone, value: true });
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+		}
+	});
 
-            async function getDashboardData(number) {
-                let numberid = number.id;
-                if (!number.plans) {
-                    return {
-                        totalRequests: 0,
-                        increase: 0,
-                        planUsage: 0,
-                        planLimit: 0,
-                        chartData: { labels: [], data: [] }
-                    };
-                }
-                let planid = number.plans.split(',')[0];
-                if (!planid) {
-                    return {
-                        totalRequests: 0,
-                        increase: 0,
-                        planUsage: 0,
-                        planLimit: 0,
-                        chartData: { labels: [], data: [] }
-                    };
-                }
-                let plan = await db.read('tbl_plan').id(planid).promise();
 
-                if (!plan) {
-                    plan = { maxlimit: 0 };
-                }
+	schema.action('status', {
+		name: 'Get the status of the instance',
+		params: '*phone:String',
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result) {
+				$.invalid('Whatsapp session not found');
+				return;
+			}
+			if (!result.local) {
+				let payload = {};
+				payload.clusterId = result.clusterId;
+				payload.schema = 'Instance';
+				payload.action = 'status';
+				payload.params = $.params;
+				payload.query = $.query;
+				let res = await MAIN.clusterproxy.getresponse(payload);
+				$.callback(res);
+				return;
+			}
+			if (result.instance) {
+				// Local instance
+				try {
+					let status = await local.instance.status();
+					$.callback({ success: true, phone, value: status });
+				} catch (error) {
+					$.callback({
+						success: false,
+						error: error.message,
+						clusterId: MAIN.sessionManager.clusterId
+					});
+				}
+			}
+		}
+	});
+	schema.action('exists', {
+		name: 'Check if a whatsapp session exists',
+		params: '*phone:String',
+		action: async function($) {
+			let phone = $.params.phone;
+			const result = await FUNC.findInstanceCluster(phone);
+			if (!result)
+				$.callback({ success: false, phone, value: false });
+			else
+				$.callback({ success: true, phone, value: true });
+		}
+	});
 
-                let today = new Date();
-                let yesterday = new Date();
-                yesterday.setDate(yesterday.getDate() - 1);
 
-                let today_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', today.format('dd-MM-yyyy')).promise();
-                let yesterday_reqs = await db.find('tbl_request').where('numberid', numberid).where('date', yesterday.format('dd-MM-yyyy')).promise();
+	schema.action('dashboard', {
+		name: 'Get dashboard data for an instance',
+		params: '*phone:String',
+		query: '*userid:String',
+		action: async function($) {
+			let phone = $.params.phone;
+			let userid = $.query.userid;
+			let db = DB();
 
-                let totalRequestsResult = await db.count('tbl_request').where('numberid', numberid).promise();
-                let totalRequests = totalRequestsResult.count;
-
-                let increase = 0;
-                if (yesterday_reqs.length > 0) {
-                    increase = ((today_reqs.length - yesterday_reqs.length) / yesterday_reqs.length) * 100;
-                } else if (today_reqs.length > 0) {
-                    increase = 100;
-                }
-
-                let planUsage = 0;
-                if (plan.maxlimit > 0) {
-                    planUsage = (totalRequests / plan.maxlimit) * 100;
-                }
-
-                let chartData = {
+            let allData = {
+                totalRequests: 0,
+                increase: 0,
+                planUsage: 0,
+                planLimit: 0,
+                chartData: {
                     labels: [],
                     data: []
-                };
-
-                for (let i = 6; i >= 0; i--) {
-                    let date = new Date();
-                    date.setDate(date.getDate() - i);
-                    let date_string = date.format('dd-MM-yyyy');
-                    let reqs = await db.find('tbl_request').where('numberid', numberid).where('date', date_string).promise();
-                    chartData.labels.push(date.format('MMM dd'));
-                    chartData.data.push(reqs.length);
                 }
+            };
+			if (phone === 'all') {
+				let numbers = await db.find('db2/tbl_number').where('userid', userid).promise();
 
-                return {
-                    totalRequests: totalRequests,
-                    increase: increase.toFixed(2),
-                    planUsage: planUsage.toFixed(2),
-                    planLimit: plan.maxlimit,
-                    chartData: chartData
-                };
-            }
+				let chartMap = new Map();
 
-            if (phone === 'all') {
-                let numbers = await db.find('tbl_number').where('userid', userid).promise();
-                let allData = {
-                    totalRequests: 0,
-                    increase: 0,
-                    planUsage: 0,
-                    planLimit: 0,
-                    chartData: {
-                        labels: [],
-                        data: []
-                    }
-                };
+				for (let number of numbers) {
+					let data = await FUNC.getDashboardData(number);
+					allData.totalRequests += data.totalRequests;
+					allData.planLimit += data.planLimit;
 
-                let chartMap = new Map();
+					for (let i = 0; i < data.chartData.labels.length; i++) {
+						let label = data.chartData.labels[i];
+						let value = data.chartData.data[i];
+						if (chartMap.has(label)) {
+							chartMap.set(label, chartMap.get(label) + value);
+						} else {
+							chartMap.set(label, value);
+						}
+					}
+				}
 
-                for (let number of numbers) {
-                    let data = await getDashboardData(number);
-                    allData.totalRequests += data.totalRequests;
-                    allData.planLimit += data.planLimit;
+				if (allData.planLimit > 0) {
+					allData.planUsage = (allData.totalRequests / allData.planLimit) * 100;
+				}
 
-                    for (let i = 0; i < data.chartData.labels.length; i++) {
-                        let label = data.chartData.labels[i];
-                        let value = data.chartData.data[i];
-                        if (chartMap.has(label)) {
-                            chartMap.set(label, chartMap.get(label) + value);
-                        } else {
-                            chartMap.set(label, value);
-                        }
-                    }
-                }
+				let today = new Date();
+				let yesterday = new Date();
+				yesterday.setDate(yesterday.getDate() - 1);
 
-                if (allData.planLimit > 0) {
-                    allData.planUsage = (allData.totalRequests / allData.planLimit) * 100;
-                }
+				let today_reqs_total = 0;
+				let yesterday_reqs_total = 0;
 
-                let today = new Date();
-                let yesterday = new Date();
-                yesterday.setDate(yesterday.getDate() - 1);
+				for (let number of numbers) {
+					let today_reqs = await db.find('tbl_request').where('numberid', number.id).where('date', today.format('dd-MM-yyyy')).promise();
+					let yesterday_reqs = await db.find('tbl_request').where('numberid', number.id).where('date', yesterday.format('dd-MM-yyyy')).promise();
+					today_reqs_total += today_reqs.length;
+					yesterday_reqs_total += yesterday_reqs.length;
+				}
 
-                let today_reqs_total = 0;
-                let yesterday_reqs_total = 0;
+				if (yesterday_reqs_total > 0) {
+					allData.increase = ((today_reqs_total - yesterday_reqs_total) / yesterday_reqs_total) * 100;
+				} else if (today_reqs_total > 0) {
+					allData.increase = 100;
+				}
 
-                for (let number of numbers) {
-                    let today_reqs = await db.find('tbl_request').where('numberid', number.id).where('date', today.format('dd-MM-yyyy')).promise();
-                    let yesterday_reqs = await db.find('tbl_request').where('numberid', number.id).where('date', yesterday.format('dd-MM-yyyy')).promise();
-                    today_reqs_total += today_reqs.length;
-                    yesterday_reqs_total += yesterday_reqs.length;
-                }
+				allData.chartData.labels = Array.from(chartMap.keys());
+				allData.chartData.data = Array.from(chartMap.values());
 
-                if (yesterday_reqs_total > 0) {
-                    allData.increase = ((today_reqs_total - yesterday_reqs_total) / yesterday_reqs_total) * 100;
-                } else if (today_reqs_total > 0) {
-                    allData.increase = 100;
-                }
+				$.callback(allData);
 
-                allData.chartData.labels = Array.from(chartMap.keys());
-                allData.chartData.data = Array.from(chartMap.values());
-
-                $.callback(allData);
-
-            } else {
-                const result = await FUNC.findInstanceCluster(phone);
-                if (!result) {
-                    $.invalid('Whatsapp session not found');
-                    return;
-                }
-
-                let number = await db.read('tbl_number').where('phonenumber', phone).where('userid', userid).promise();
-                if (!number) {
-                    $.invalid('Permission denied or number not found.');
-                    return;
-                }
-
-                if (!result.local) {
-                    let payload = {};
-                    payload.clusterId = result.clusterId;
-                    payload.schema = 'Instance';
-                    payload.action = 'dashboard';
-                    payload.params = $.params;
-                    payload.query = $.query;
-                    let res = await MAIN.clusterproxy.getresponse(payload);
-                    $.callback(res);
-                    return;
-                }
-
-                let data = await getDashboardData(number);
-                $.callback(data);
-            }
-        }
-    });
+			} else {
+				let number = await db.read('db2/tbl_number').where('phonenumber', phone).where('userid', userid).promise();
+				if (!number) {
+					$.callback(allData);
+					return;
+				}
+				let data = await FUNC.getDashboardData(number);
+				$.callback(data);
+			}
+		}
+	});
 
 })
